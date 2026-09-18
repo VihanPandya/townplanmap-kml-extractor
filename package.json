@@ -1,0 +1,46 @@
+{
+  "name": "townplanmap-kml-extractor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discover publicly accessible geographic vector data behind TownPlanMap and export it as validated KML.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:init": "node scripts/db-init.mjs"
+  },
+  "dependencies": {
+    "@mapbox/vector-tile": "^3.0.0",
+    "@turf/area": "^7.4.0",
+    "@turf/bbox": "^7.4.0",
+    "@turf/length": "^7.4.0",
+    "fast-xml-parser": "^5.11.1",
+    "jszip": "^3.10.1",
+    "maplibre-gl": "^6.10.0",
+    "next": "^16.3.5",
+    "pbf": "^5.1.2",
+    "pg": "^8.23.0",
+    "proj4": "^2.22.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^26.6.1",
+    "@types/pg": "^8.15.5",
+    "@types/proj4": "^2.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.1"
+  },
+  "engines": {
+    "node": ">=20.9"
+  }
+}
