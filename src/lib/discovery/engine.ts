@@ -83,11 +83,10 @@ export async function runDiscoveryScan(options: ScanOptions = {}): Promise<ScanR
   });
 
   if (!landing.ok) {
-    const reason =
-      landing.kind === 'auth-required'
-        ? 'This dataset requires authorised access through TownPlanMap.'
-        : landing.reason;
-    return finish([], { kind: landing.kind, reason }, false);
+    // Report what actually happened. A refusal on the landing page is not the
+    // same thing as a restricted dataset, so the fetcher's factual reason is
+    // passed through rather than being relabelled.
+    return finish([], { kind: landing.kind, reason: landing.reason }, false);
   }
 
   documentsFetched.push(landing.finalUrl);

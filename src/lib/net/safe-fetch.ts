@@ -243,9 +243,13 @@ export async function safeFetch(target: string, options: SafeFetchOptions): Prom
           url: target,
           status: response.status,
           kind: classifyStatus(response.status),
+          // Stay factual about what happened. Whether a 403 means "this dataset
+          // is restricted" or "something on the network path refused us" is not
+          // knowable here, so the caller that has that context adds it.
           reason:
             response.status === 401 || response.status === 403
-              ? 'This dataset requires authorised access through TownPlanMap.'
+              ? `The request was refused with ${response.status} ${response.statusText || 'Forbidden'}. ` +
+                'Access to this resource is restricted, and this tool does not attempt to bypass access controls.'
               : `Upstream responded ${response.status} ${response.statusText}.`,
           elapsedMs: Date.now() - started,
         };
