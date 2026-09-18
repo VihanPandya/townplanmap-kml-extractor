@@ -13,7 +13,7 @@ import type { LocationRecord } from '@/lib/discovery/types';
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { connection, connect, selection, selectCity, selectArea } = useAppState();
+  const { connection, selection, selectCity, selectArea } = useAppState();
 
   const [cities, setCities] = useState<LocationRecord[]>([]);
   const [areas, setAreas] = useState<LocationRecord[]>([]);

@@ -239,13 +239,14 @@ TownPlanMap_Export.zip
 ## Testing
 
 ```bash
-npm test          # 109 unit tests
+npm test          # 122 unit tests
 npm run typecheck
 npm run lint
 npm run build
 ```
 
-Coverage focuses on the parts where a silent error would be dangerous: SSRF rejection, CRS transforms
+Coverage focuses on the parts where a silent error would be dangerous: the provenance and attribution
+guarantees above, SSRF rejection, CRS transforms
 (cross-checked against the closed-form Mercator inverse), geometry validation, Esri ring-winding reconstruction,
 KML round-tripping, XML hardening and filename/path sanitisation.
 
