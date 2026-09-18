@@ -227,8 +227,14 @@ export function MapView({
   // The style-lifecycle effects below must not re-run when the data changes, or
   // every new feature page would tear the style down and rebuild it. They read
   // the current data through this ref instead of depending on it.
+  //
+  // The ref is updated in an effect rather than during render: a render-time
+  // mutation is not safe under React's rules, and the map callbacks that read it
+  // (`load`, `styledata`) all fire asynchronously, after effects have run.
   const collectionRef = useRef(collection);
-  collectionRef.current = collection;
+  useEffect(() => {
+    collectionRef.current = collection;
+  }, [collection]);
 
   /** Add our source and layers on top of whatever basemap style is loaded. */
   const installLayers = useCallback((instance: MapLibreMap, data: GeoJSON.FeatureCollection) => {
@@ -327,7 +333,9 @@ export function MapView({
       instance.remove();
       map.current = null;
     };
-  }, []);
+    // `installLayers` is a dependency-free useCallback, so it is stable and the
+    // map is still created exactly once.
+  }, [installLayers]);
 
   // --- basemap switching --------------------------------------------------
   const appliedBasemap = useRef<BasemapId>('map');

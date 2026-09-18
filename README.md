@@ -241,6 +241,7 @@ TownPlanMap_Export.zip
 ```bash
 npm test          # 109 unit tests
 npm run typecheck
+npm run lint
 npm run build
 ```
 
