@@ -18,6 +18,7 @@ import {
   NavigationControl,
   Popup,
   ScaleControl,
+  setWorkerUrl,
   type LngLatBoundsLike,
   type MapGeoJSONFeature,
   type MapMouseEvent,
@@ -70,6 +71,19 @@ const BASEMAPS: Record<BasemapId, BasemapDefinition> = {
   none: { label: 'No basemap', tiles: null, attribution: '', maxzoom: 22 },
 };
 
+/**
+ * Point MapLibre at the worker bundle we publish under `public/maplibre/`.
+ *
+ * MapLibre 6 resolves its worker relative to its own module URL, which after
+ * bundling points into the build's chunk directory where the worker file does
+ * not exist. The request 404s, the worker dies, and GeoJSON sources then stay
+ * silently empty — the map renders, pans and zooms, but never shows a feature.
+ * `scripts/copy-maplibre-worker.mjs` puts the file where this URL expects it.
+ */
+if (typeof window !== 'undefined') {
+  setWorkerUrl('/maplibre/maplibre-gl-worker.mjs');
+}
+
 const SOURCE_ID = 'tpm-features';
 const FILL_LAYER = 'tpm-fill';
 const LINE_LAYER = 'tpm-line';
@@ -105,7 +119,11 @@ function buildStyle(basemap: BasemapId): StyleSpecification {
     });
   }
 
-  return { version: 8, sources, layers, glyphs: undefined };
+  // `glyphs` is omitted rather than set to undefined: MapLibre validates the key
+  // as a string when it is present at all, and an undefined value aborts the
+  // whole style load — leaving a map with no sources, no layers and no `load`
+  // event. Nothing here renders text labels, so no glyph source is needed.
+  return { version: 8, sources, layers };
 }
 
 function toCollection(features: MapFeature[]): GeoJSON.FeatureCollection {
@@ -206,6 +224,12 @@ export function MapView({
 
   const collection = useMemo(() => toCollection(decorated), [decorated]);
 
+  // The style-lifecycle effects below must not re-run when the data changes, or
+  // every new feature page would tear the style down and rebuild it. They read
+  // the current data through this ref instead of depending on it.
+  const collectionRef = useRef(collection);
+  collectionRef.current = collection;
+
   /** Add our source and layers on top of whatever basemap style is loaded. */
   const installLayers = useCallback((instance: MapLibreMap, data: GeoJSON.FeatureCollection) => {
     if (!instance.getSource(SOURCE_ID)) {
@@ -275,7 +299,16 @@ export function MapView({
     instance.addControl(new AttributionControl({ compact: true }), 'bottom-right');
 
     instance.on('load', () => {
+      installLayers(instance, collectionRef.current);
       setReady(true);
+    });
+
+    // `setStyle` discards every source and layer, so anything we added has to be
+    // put back each time a style finishes loading. A persistent listener is used
+    // rather than a one-shot, because a style can reload more than once.
+    instance.on('styledata', () => {
+      if (!instance.isStyleLoaded()) return;
+      installLayers(instance, collectionRef.current);
     });
 
     // A basemap provider that refuses or rate-limits should be reported, not
@@ -297,19 +330,21 @@ export function MapView({
   }, []);
 
   // --- basemap switching --------------------------------------------------
+  const appliedBasemap = useRef<BasemapId>('map');
+
   useEffect(() => {
     const instance = map.current;
     if (!instance || !ready) return;
+    // The map is created with the default basemap already applied, so calling
+    // setStyle for it again would tear the style down for no reason.
+    if (appliedBasemap.current === basemap) return;
 
+    appliedBasemap.current = basemap;
     setTileError(null);
     instance.setStyle(buildStyle(basemap));
-    // setStyle drops every source and layer, so reinstall ours once the new
-    // style has settled.
-    const reinstall = () => {
-      installLayers(instance, collection);
-    };
-    instance.once('styledata', reinstall);
-  }, [basemap, ready, installLayers, collection]);
+    // The persistent styledata listener above reinstalls our layers once the
+    // new style has loaded.
+  }, [basemap, ready]);
 
   // --- data updates -------------------------------------------------------
   useEffect(() => {
@@ -319,9 +354,11 @@ export function MapView({
     const source = instance.getSource(SOURCE_ID) as GeoJSONSource | undefined;
     if (source) {
       source.setData(collection);
-    } else {
+    } else if (instance.isStyleLoaded()) {
       installLayers(instance, collection);
     }
+    // When the style is mid-load there is nothing to do: the styledata listener
+    // installs the layers with the current data as soon as it settles.
   }, [collection, ready, installLayers]);
 
   // --- interaction --------------------------------------------------------

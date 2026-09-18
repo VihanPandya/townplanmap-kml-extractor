@@ -4,7 +4,9 @@
   "private": true,
   "description": "Discover publicly accessible geographic vector data behind TownPlanMap and export it as validated KML.",
   "scripts": {
+    "predev": "node scripts/copy-maplibre-worker.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/copy-maplibre-worker.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

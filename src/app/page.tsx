@@ -186,7 +186,11 @@ function ConnectionPanel() {
       {connection.status === 'connected' ? (
         <div className="space-y-3">
           <ul className="space-y-1.5 text-sm">
-            <Check ok>TownPlanMap connected</Check>
+            <Check ok={connection.sourceReachable}>
+              {connection.sourceReachable
+                ? 'TownPlanMap connected'
+                : 'TownPlanMap could not be reached \u2014 working from a stand-in dataset'}
+            </Check>
             <Check ok={connection.mapInterfaceDetected}>
               {connection.mapInterfaceDetected ? 'Map interface detected' : 'No map interface was detected'}
             </Check>

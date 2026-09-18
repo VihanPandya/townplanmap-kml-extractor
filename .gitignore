@@ -13,3 +13,4 @@ next-env.d.ts
 npm-debug.log*
 coverage/
 storage/exports/
+public/maplibre/

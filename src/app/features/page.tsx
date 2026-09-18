@@ -151,6 +151,13 @@ export default function FeaturesPage() {
 
   const columns = useMemo(() => buildColumns(data?.layer.fields ?? [], features), [data, features]);
 
+  // Memoised: a fresh array each render would give the map a new prop identity
+  // every time and make it recompute its whole source on every keystroke.
+  const highlightedIds = useMemo(
+    () => (activeId ? [activeId, ...selection.featureIds] : selection.featureIds),
+    [activeId, selection.featureIds],
+  );
+
   if (!layerId) {
     return (
       <Panel>
@@ -317,7 +324,7 @@ export default function FeaturesPage() {
         <div className="min-h-[52vh]">
           <MapView
             features={mapFeatures}
-            selectedIds={activeId ? [activeId, ...selection.featureIds] : selection.featureIds}
+            selectedIds={highlightedIds}
             onSelect={(id) => setActiveId(id)}
             fitKey={fitKey}
             height="100%"

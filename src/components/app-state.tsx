@@ -29,6 +29,8 @@ export type ConnectionState =
   | {
       status: 'connected';
       scanId: string;
+      /** False when only a stand-in dataset is available. */
+      sourceReachable: boolean;
       mapInterfaceDetected: boolean;
       geographicLayersDetected: boolean;
       endpointCount: number;
@@ -119,6 +121,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       const response = await fetch('/api/connect', { method: 'GET' });
       const data = (await response.json()) as {
         connected: boolean;
+        sourceReachable?: boolean;
         scan: {
           id: string;
           mapInterfaceDetected: boolean;
@@ -134,6 +137,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         setConnection({
           status: 'connected',
           scanId: data.scan.id,
+          sourceReachable: data.sourceReachable !== false,
           mapInterfaceDetected: data.scan.mapInterfaceDetected,
           geographicLayersDetected: data.scan.geographicLayersDetected,
           endpointCount: data.scan.endpoints.length,
@@ -171,6 +175,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       setConnection({
         status: 'connected',
         scanId: String(data.scanId),
+        sourceReachable: data.sourceReachable !== false,
         mapInterfaceDetected: Boolean(data.mapInterfaceDetected),
         geographicLayersDetected: Boolean(data.geographicLayersDetected),
         endpointCount: Number(data.endpointCount ?? 0),

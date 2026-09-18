@@ -31,6 +31,10 @@ export const POST = handler(async (request) => {
 
   return ok({
     connected: true,
+    // `connected` can be true while the source itself was unreachable, when the
+    // synthetic sample dataset is standing in for it. Keep the two distinct so
+    // the interface never claims a connection it does not have.
+    sourceReachable: result.scan.failure === null,
     scanId: result.scan.id,
     mapInterfaceDetected: result.scan.mapInterfaceDetected,
     geographicLayersDetected: result.scan.geographicLayersDetected,
@@ -58,6 +62,7 @@ export const GET = handler(async () => {
   }
   return ok({
     connected: scan.connected,
+    sourceReachable: scan.failure === null,
     scan,
     storage: { kind: store.kind, durable: store.durable },
   });
