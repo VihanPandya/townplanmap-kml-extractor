@@ -12,6 +12,10 @@ is not a land boundary and should never be presented as one.
 TownPlanMap → City → Village → Layer → Land/Feature → Geometry → KML
 ```
 
+> **How does it actually work?** [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md) walks a single land parcel
+> through the whole system — discovery, classification, CRS handling, validation and export — and explains why
+> each step is built the way it is.
+
 ---
 
 ## What it does
