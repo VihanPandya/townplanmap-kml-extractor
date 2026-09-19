@@ -352,6 +352,73 @@ few times a second, so a database-backed store is not hammered by the reporter.
 
 ---
 
+## 3a. The other half: preserving the source's own files
+
+Everything above reconstructs geometry. There is a second, separate job: keeping the KML and KMZ files the
+source *already publishes*.
+
+`src/lib/preservation/`
+
+### Two kinds of artefact, held firmly apart
+
+```
+ORIGINAL       bytes the source served, kept verbatim, hashed, never rewritten
+RECONSTRUCTED  a document this tool generated from geometry it read
+```
+
+Conflating them would be the most damaging thing this tool could do — a reconstruction presented as the
+authority's own file invites someone to treat a derived artefact as a record. So the separation is
+**structural rather than conventional**:
+
+- `SourceFileRecord.origin` is the *literal type* `'original'`. No value of that type can describe a generated
+  document, and the compiler enforces it.
+- The PostGIS table carries `CHECK (origin = 'original')`, so a reconstruction cannot be filed there by
+  mistake.
+- Original bytes never pass through `buildKmlDocument`. There is no code path that could emit a re-serialised
+  document wearing an original's name.
+- The two download routes are entirely separate, and each sets `x-artifact-origin` so an automated consumer
+  has the distinction without reading either catalog.
+- Every generated document is stamped `origin=reconstructed` in its own `ExtendedData`, plus a plain-English
+  paragraph, so the label survives the file leaving the tool.
+
+### Reaching what the interface never shows
+
+A KML file is not necessarily a leaf. `<NetworkLink>` points at further KML, which may point at more — and
+those documents are frequently referenced nowhere a page or its JavaScript would reveal. The map loads a root
+document; the rest arrives because the KML itself asked for it.
+
+```mermaid
+flowchart TD
+    A["Seeds from the last scan"] --> B["Fetch a candidate"]
+    B --> C{"Is it really KML/KMZ?"}
+    C -->|"no — HTML, image, JSON"| D["Record the failure, move on"]
+    C -->|"yes"| E["Hash the bytes"]
+    E --> F{"Seen this hash?"}
+    F -->|"yes"| G["Already preserved, skip"]
+    F -->|"no"| H["Preserve verbatim + inspect"]
+    H --> I["Extract NetworkLinks / styleUrl / Icon"]
+    I --> J{"Depth limit reached?"}
+    J -->|"no"| B
+    J -->|"yes"| K["Note what was left unfollowed"]
+```
+
+The sweep is breadth-first, so shallow documents are preserved before deep chains, and every bound is
+honoured: request budget, file count, file size, link depth. Cycles are handled by the URL set; the same
+document served from two URLs is recognised by hash and stored once.
+
+Each file records **how it was reached**, and the UI flags the routes the visible interface offers no way to
+follow — `script-bundle`, `network-link`, `style-reference` and friends.
+
+### What the sweep will not do
+
+"Publicly accessible" is meant strictly. The sweep reads what the source serves to an ordinary
+unauthenticated request, through the same guarded fetcher as everything else. A `401` or `403` is recorded as
+a refusal, tried once, and left alone. Nothing attempts to bypass authentication, paywalls, tokens or access
+controls, and a login page dressed up with a `.kml` extension is recognised by its bytes and rejected rather
+than preserved as geographic data.
+
+---
+
 ## 4. The safety envelope
 
 The tool takes URLs out of third-party HTML and JavaScript and fetches them server-side. That is textbook
@@ -464,6 +531,9 @@ The tool's failure behaviour is a feature, so here it is in one place:
 | Feature cap reached | Same — truncation is always reported |
 | GML-only WFS | Falls back to GML rather than giving up |
 | Basemap tiles unavailable | Extracted geometry still renders; a notice explains the blank backdrop |
+| A preserved file will not parse | The bytes are kept anyway; only the summary is unavailable, and it says so |
+| A `.kml` URL serves a login page | Recognised by its bytes, recorded as a failure, not preserved |
+| A NetworkLink chain runs deep | Followed to the configured depth, then what was left unfollowed is named |
 
 ---
 
@@ -482,6 +552,8 @@ The tool's failure behaviour is a feature, so here it is in one place:
 | Geometry validation | `src/lib/geo/geometry.ts` |
 | KML writing | `src/lib/kml/builder.ts` |
 | KML checking | `src/lib/kml/validate.ts` |
+| The original/reconstructed distinction | `src/lib/preservation/types.ts` |
+| Finding unexposed KML | `src/lib/preservation/sweep.ts`, `src/lib/kml/links.ts` |
 | The export sequence | `src/lib/exports/pipeline.ts` |
 | Job running and spill-to-disk | `src/lib/exports/manager.ts` |
 
@@ -498,5 +570,8 @@ then lets anyone download it.
 
 At four points it will produce nothing instead of something: no vector data, no known CRS, invalid geometry,
 invalid output. Each of those refusals comes with a sentence explaining itself.
+
+Alongside that, it preserves the files the source already publishes — including the ones no page ever links
+to — and keeps them rigorously distinct from anything it generated itself.
 
 That is the whole design.

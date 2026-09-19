@@ -18,6 +18,7 @@ import type {
   ScanResult,
 } from '@/lib/discovery/types';
 import type { ExportJob } from '@/lib/exports/types';
+import type { SourceFileRecord } from '@/lib/preservation/types';
 import type { CatalogStore } from './index';
 
 export class MemoryStore implements CatalogStore {
@@ -32,6 +33,7 @@ export class MemoryStore implements CatalogStore {
   private features = new Map<string, FeatureRecord>();
   private featuresByLayer = new Map<string, string[]>();
   private exports = new Map<string, ExportJob>();
+  private sourceFiles = new Map<string, { record: SourceFileRecord; bytes: Uint8Array }>();
 
   describe(): string {
     return (
@@ -162,6 +164,32 @@ export class MemoryStore implements CatalogStore {
     return ids
       .map((id) => this.features.get(id))
       .filter((feature): feature is FeatureRecord => feature !== undefined);
+  }
+
+  async saveSourceFile(record: SourceFileRecord, bytes: Uint8Array): Promise<void> {
+    // Copy the buffer so a caller reusing its own array cannot mutate what has
+    // been preserved.
+    this.sourceFiles.set(record.id, { record, bytes: new Uint8Array(bytes) });
+  }
+
+  async listSourceFiles(limit = 500): Promise<SourceFileRecord[]> {
+    return [...this.sourceFiles.values()]
+      .map((entry) => entry.record)
+      .sort((a, b) => b.retrievedAt.localeCompare(a.retrievedAt))
+      .slice(0, limit);
+  }
+
+  async getSourceFile(id: string): Promise<SourceFileRecord | null> {
+    return this.sourceFiles.get(id)?.record ?? null;
+  }
+
+  async getSourceFileBytes(id: string): Promise<Uint8Array | null> {
+    const entry = this.sourceFiles.get(id);
+    return entry ? new Uint8Array(entry.bytes) : null;
+  }
+
+  async countSourceFiles(): Promise<number> {
+    return this.sourceFiles.size;
   }
 
   async saveExport(job: ExportJob): Promise<void> {

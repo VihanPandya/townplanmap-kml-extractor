@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAppState } from '@/components/app-state';
 import { MapView, type MapFeature } from '@/components/map-view';
 import { Empty, Notice, Panel, ProgressBar, Row, Spinner } from '@/components/ui';
+import { OriginBadge } from '@/components/origin-badge';
 import type { LayerRecord } from '@/lib/discovery/types';
 import type { ExportProgress } from '@/lib/exports/types';
 import type { KmlValidationReport } from '@/lib/kml/validate';
@@ -215,7 +216,14 @@ export default function ExportPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-xl font-semibold tracking-tight">Export Centre</h1>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-xl font-semibold tracking-tight">Export Centre</h1>
+          <OriginBadge origin="reconstructed" />
+        </div>
+        <p className="mt-1 max-w-3xl text-sm text-[var(--color-ink-muted)]">
+          Everything generated here is built from geometry read out of the source. It is not a file the source
+          published. For the source&rsquo;s own KML and KMZ files, see <strong>Source Files</strong>.
+        </p>
         <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
           {selection.cityName ?? 'No city selected'}
           {selection.areaName ? ` · ${selection.areaName}` : ''}
@@ -332,7 +340,9 @@ export default function ExportPage() {
                 <span>
                   Export individual KML files
                   <span className="block text-xs text-[var(--color-ink-subtle)]">
-                    One file per feature plus a combined document, packaged as a ZIP with a metadata.json.
+                    A ZIP with one file per feature plus a combined document under <code>Reconstructed/</code>,
+                    any preserved source files under <code>Original/</code>, and a metadata.json recording the
+                    provenance and hashes of both.
                   </span>
                 </span>
               </label>

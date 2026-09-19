@@ -10,6 +10,7 @@ const LINKS = [
   { href: '/layers', label: 'Map Layers' },
   { href: '/features', label: 'Features' },
   { href: '/export', label: 'KML Export' },
+  { href: '/source-files', label: 'Source Files' },
   { href: '/history', label: 'Export History' },
   { href: '/settings', label: 'Settings' },
 ];

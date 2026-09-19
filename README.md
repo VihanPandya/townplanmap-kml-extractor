@@ -32,6 +32,8 @@ TownPlanMap → City → Village → Layer → Land/Feature → Geometry → KML
 6. **Transforms** coordinates to WGS84 with proj4 when the source publishes in another CRS.
 7. **Generates** KML with folders, `ExtendedData`, neutral styling and source attribution.
 8. **Validates the generated document** by parsing it back, then lets you preview it on the map before download.
+9. **Preserves the source's own KML/KMZ files** byte for byte, separately from anything it generates — see
+   [Original files versus reconstructions](#original-files-versus-reconstructions).
 
 ## What it deliberately does not do
 
@@ -99,6 +101,7 @@ src/
 │   ├── layers/                 Layer discovery, grouped by planning category
 │   ├── features/               Map, feature explorer, inspector, attribute table
 │   ├── export/                 Export Centre, validation report, KML viewer
+│   ├── source-files/           Preserved original KML/KMZ
 │   ├── history/                Export history
 │   └── settings/               Limits and access policy
 ├── components/                 App state, map, shared UI
@@ -123,7 +126,9 @@ src/
     │   ├── builder.ts          KML generation
     │   ├── validate.ts         Post-generation validation
     │   ├── parse.ts            KML reading, for the viewer and KML sources
+    │   ├── links.ts            NetworkLink/Icon/styleUrl extraction
     │   └── package.ts          KMZ and ZIP packaging
+    ├── preservation/           Original-file sweep, and the origin model
     ├── db/                     PostGIS and in-memory catalog stores
     └── exports/                Job manager and the export pipeline
 ```
@@ -143,6 +148,47 @@ A provider knows how to talk to one family of GIS service and turns it into the 
 | `VectorTileProvider` | Mapbox Vector Tiles | Last resort — see the provenance note below |
 
 Dispatch is first-match-wins, most specific first.
+
+---
+
+## Original files versus reconstructions
+
+The tool produces two kinds of artefact, and it never lets them blur:
+
+| | **Original** | **Reconstructed** |
+|---|---|---|
+| What it is | A file the source published | A document this tool generated from map geometry |
+| Where it lives | **Source Files** | **KML Export** / **Export History** |
+| Bytes | Preserved exactly as received, SHA-256 recorded | Written by the KML builder |
+| In the file | — | `origin=reconstructed` in `ExtendedData`, plus a plain-English statement |
+| Download header | `x-artifact-origin: original` | `x-artifact-origin: reconstructed` |
+| In a bundle | `Original/` | `Reconstructed/` |
+
+The separation is structural, not a convention:
+
+- `SourceFileRecord.origin` has the **literal type** `'original'`, so no value of that type can describe a
+  generated document. The PostGIS table enforces the same with a `CHECK (origin = 'original')`.
+- Original bytes never pass through the KML builder, and the two download routes are entirely separate, so
+  there is no code path by which a regenerated document could be served wearing an original's identity.
+- Every generated document is stamped inside itself, so the label survives the file leaving the tool.
+
+### Finding files the interface does not expose
+
+A sweep (`POST /api/preserve`) looks for KML and KMZ beyond what the visible UI offers:
+
+- hrefs buried in JavaScript bundles and inline bootstrap config
+- sources named by a map style document or a service catalog
+- **`<NetworkLink>` chains inside KML documents, followed transitively** — a root document routinely points at
+  per-ward files that appear nowhere else
+- `styleUrl` and overlay `<Icon>` references into further documents
+
+Each preserved file records the route it was reached by, and the UI flags the ones the visible interface
+offers no way to reach. Cycles are detected, byte-identical duplicates are stored once, and link depth,
+file count, file size and request budget are all bounded.
+
+**"Publicly accessible" is meant strictly.** The sweep reads what the source serves to an ordinary
+unauthenticated request. A `401` or `403` is recorded as a refusal and the file is left alone; nothing
+attempts to bypass authentication, paywalls, tokens or access controls.
 
 ---
 
@@ -244,6 +290,9 @@ raised from the browser. They are all listed on the Settings screen.
 | `POST` | `/api/export/:id/cancel` | Cancel a running job |
 | `GET` | `/api/exports` | Export history |
 | `POST` | `/api/kml/preview` | Parse a generated document back to GeoJSON |
+| `POST` | `/api/preserve` | Sweep the source for original KML/KMZ and preserve it |
+| `GET` | `/api/source-files` · `/:id` | The preserved originals |
+| `GET` | `/api/source-files/:id/download` | An original, byte for byte |
 | `GET` | `/api/settings` | Limits and policies in force |
 
 Export requests take either an explicit scope:
@@ -267,12 +316,13 @@ and respond `202` with `{ "exportId": "export_...", "status": "queued" }`.
 
 ```
 TownPlanMap_Export.zip
-├── KML/
-│   └── <Location>.kml          Combined, with folders
-├── Individual/
-│   ├── <Location>_<Feature>.kml
-│   └── …
-└── metadata.json               Source, layers, CRS, exclusions, extraction date
+├── Original/                   Files the source published, byte for byte
+│   └── <source filename>.kml
+├── Reconstructed/              Generated by this tool from map geometry
+│   ├── KML/<Location>.kml      Combined, with folders
+│   └── Individual/<Location>_<Feature>.kml
+├── README.txt                  What the two directories mean
+└── metadata.json               Provenance for both, including SHA-256 of each original
 ```
 
 ---
@@ -280,7 +330,7 @@ TownPlanMap_Export.zip
 ## Testing
 
 ```bash
-npm test          # 227 unit tests
+npm test          # 272 unit tests
 npm run typecheck
 npm run lint
 npm run build

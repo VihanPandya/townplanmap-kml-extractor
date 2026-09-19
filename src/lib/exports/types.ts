@@ -17,6 +17,13 @@ export type ExportRequest = {
   format: ExportFormat;
   /** One KML per feature, packaged as a ZIP, instead of a single document. */
   individualFiles?: boolean;
+  /**
+   * Include preserved original KML/KMZ files in a bundle, in their own
+   * directory. Defaults to true: an archive that silently omitted the source's
+   * own files while including reconstructions would misrepresent what is
+   * available.
+   */
+  includeOriginals?: boolean;
   /** Document title; defaults to the layer or location name. */
   name?: string;
 };

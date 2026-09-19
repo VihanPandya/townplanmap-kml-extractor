@@ -40,6 +40,16 @@ export const LIMITS = {
   featurePageSize: intFromEnv('TPM_FEATURE_PAGE_SIZE', 1000, 5000),
   /** Minimum milliseconds between two requests to the same host. */
   perHostThrottleMs: intFromEnv('TPM_PER_HOST_THROTTLE_MS', 120, 10_000),
+
+  // --- preservation of original KML/KMZ files ------------------------------
+  /** Original files preserved in a single sweep. */
+  maxPreservedFiles: intFromEnv('TPM_MAX_PRESERVED_FILES', 250, 5_000),
+  /** Bytes accepted for one preserved file. */
+  maxPreservedFileBytes: intFromEnv('TPM_MAX_PRESERVED_FILE_BYTES', 64 * 1024 * 1024, 256 * 1024 * 1024),
+  /** How deep a NetworkLink chain is followed before the sweep stops. */
+  maxNetworkLinkDepth: intFromEnv('TPM_MAX_NETWORK_LINK_DEPTH', 4, 12),
+  /** Requests a preservation sweep may issue. */
+  maxRequestsPerSweep: intFromEnv('TPM_MAX_REQUESTS_PER_SWEEP', 200, 2_000),
 } as const;
 
 export type Limits = typeof LIMITS;

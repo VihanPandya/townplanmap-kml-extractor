@@ -124,6 +124,7 @@ export const exportRequestSchema = z.object({
   scope: exportScopeSchema,
   format: z.enum(['kml', 'kmz', 'geojson']).default('kml'),
   individualFiles: z.boolean().optional(),
+  includeOriginals: z.boolean().optional(),
   name: z.string().min(1).max(200).optional(),
 });
 

@@ -23,6 +23,8 @@ import { GeoJsonFileProvider, KmlFileProvider, TopoJsonFileProvider } from '@/li
 import { VectorTileProvider } from '@/lib/discovery/providers/vector-tiles';
 import { FixtureProvider, fixtureEndpoint } from '@/lib/discovery/providers/fixture';
 import type { FeaturePage, FeatureQuery, GeoProvider, ProviderContext } from '@/lib/discovery/providers/base';
+import { runPreservationSweep, looksLikeKmlResource } from '@/lib/preservation/sweep';
+import type { DiscoveryRoute, PreservationSweep, SourceFileRecord } from '@/lib/preservation/types';
 import type {
   DiscoveredEndpoint,
   FeatureRecord,
@@ -455,3 +457,86 @@ export async function ensureGeometry(
 }
 
 export const SOURCE_INFO = SOURCE;
+
+// --- preservation of original files -------------------------------------
+
+/**
+ * Sweep the source for original KML/KMZ files and preserve them.
+ *
+ * Seeds come from the last discovery scan — every endpoint it classified as a
+ * KML or KMZ resource, plus anything whose URL looks like one regardless of how
+ * it was classified, since a `.kml` served with the wrong content type is
+ * common. From there the sweep follows the documents' own NetworkLinks.
+ */
+export async function preserveSourceFiles(
+  options: { signal?: AbortSignal; extraUrls?: string[] } = {},
+): Promise<PreservationSweep> {
+  const store = await getStore();
+  const scan = await store.getLatestScan();
+
+  const seeds: Array<{ url: string; route: DiscoveryRoute; discoveredIn: string }> = [];
+  const seen = new Set<string>();
+
+  const add = (url: string, route: DiscoveryRoute, discoveredIn: string) => {
+    if (seen.has(url)) return;
+    seen.add(url);
+    seeds.push({ url, route, discoveredIn });
+  };
+
+  for (const url of options.extraUrls ?? []) {
+    add(url, 'seed', 'supplied with the request');
+  }
+
+  for (const endpoint of scan?.endpoints ?? []) {
+    // Classification is a hint here, not a gate: the sweep re-checks what was
+    // actually served, so a mislabelled .kml still gets its chance.
+    if (endpoint.kind !== 'kml' && endpoint.kind !== 'kmz' && !looksLikeKmlResource(endpoint.url)) {
+      continue;
+    }
+    add(endpoint.url, routeFromDiscovery(endpoint.discoveredIn), endpoint.discoveredIn);
+  }
+
+  const sweep = await runPreservationSweep({
+    seeds,
+    signal: options.signal,
+    onFile: async (record, bytes) => {
+      await store.saveSourceFile(record, bytes);
+    },
+  });
+
+  if (scan === null) {
+    sweep.notes.push(
+      'No discovery scan has been run, so only URLs supplied with the request were considered. Connect to ' +
+        'the source first for a full sweep.',
+    );
+  }
+
+  return sweep;
+}
+
+/** Map the discovery engine's prose provenance onto a preservation route. */
+function routeFromDiscovery(discoveredIn: string): DiscoveryRoute {
+  const text = discoveredIn.toLowerCase();
+  if (text.includes('style document')) return 'map-style';
+  if (text.includes('services directory') || text.includes('catalog')) return 'service-catalog';
+  if (text.includes('inline script')) return 'inline-script';
+  if (text.includes('script')) return 'script-bundle';
+  if (text.includes('landing page')) return 'page-markup';
+  return 'seed';
+}
+
+export async function listSourceFiles(limit?: number): Promise<SourceFileRecord[]> {
+  const store = await getStore();
+  return store.listSourceFiles(limit);
+}
+
+export async function getSourceFile(id: string): Promise<SourceFileRecord | null> {
+  const store = await getStore();
+  return store.getSourceFile(id);
+}
+
+/** The preserved bytes, exactly as they were received. */
+export async function getSourceFileBytes(id: string): Promise<Uint8Array | null> {
+  const store = await getStore();
+  return store.getSourceFileBytes(id);
+}

@@ -129,3 +129,41 @@ CREATE TABLE IF NOT EXISTS exports (
 
 CREATE INDEX IF NOT EXISTS exports_status_idx ON exports (status);
 CREATE INDEX IF NOT EXISTS exports_created_idx ON exports (created_at DESC);
+
+-- Original KML/KMZ files retrieved from the source and preserved verbatim.
+--
+-- `content` holds the exact bytes the source served. They are never rewritten,
+-- re-serialised or normalised: `sha256` is what makes a preserved copy provably
+-- identical to the original, so any transformation would destroy the point.
+--
+-- `origin` is fixed to 'original' by a CHECK constraint. Generated documents
+-- belong in `exports`, and the constraint makes it impossible to file a
+-- reconstructed artefact here by mistake.
+CREATE TABLE IF NOT EXISTS source_files (
+  id             TEXT PRIMARY KEY,
+  origin         TEXT NOT NULL DEFAULT 'original' CHECK (origin = 'original'),
+  url            TEXT NOT NULL,
+  final_url      TEXT,
+  kind           TEXT NOT NULL CHECK (kind IN ('kml', 'kmz')),
+  filename       TEXT NOT NULL,
+  content_type   TEXT,
+  byte_size      BIGINT NOT NULL,
+  sha256         TEXT NOT NULL,
+  content        BYTEA NOT NULL,
+  retrieved_at   TIMESTAMPTZ NOT NULL,
+  last_modified  TEXT,
+  etag           TEXT,
+  discovered_in  TEXT NOT NULL,
+  route          TEXT NOT NULL,
+  parent_id      TEXT REFERENCES source_files (id) ON DELETE SET NULL,
+  depth          INTEGER NOT NULL DEFAULT 0,
+  inspection     JSONB NOT NULL DEFAULT '{}'::jsonb,
+  notes          JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+
+-- The same document is often reachable by several routes; the hash is what
+-- identifies it, so duplicates are recognisable without a byte comparison.
+CREATE INDEX IF NOT EXISTS source_files_sha_idx ON source_files (sha256);
+CREATE INDEX IF NOT EXISTS source_files_route_idx ON source_files (route);
+CREATE INDEX IF NOT EXISTS source_files_retrieved_idx ON source_files (retrieved_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS source_files_url_sha_idx ON source_files (url, sha256);

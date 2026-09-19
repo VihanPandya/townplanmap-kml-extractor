@@ -17,6 +17,7 @@ import type {
   ScanResult,
 } from '@/lib/discovery/types';
 import type { ExportJob } from '@/lib/exports/types';
+import type { SourceFileRecord } from '@/lib/preservation/types';
 import type { Geometry, BoundingBox } from '@/lib/geo/types';
 import { identifyCrs, UNKNOWN_CRS } from '@/lib/geo/crs';
 import { areaSquareMetres, describeGeometry } from '@/lib/geo/geometry';
@@ -434,6 +435,79 @@ export class PostgisStore implements CatalogStore {
     return result.rows.map(rowToFeature);
   }
 
+  // --- preserved original files ------------------------------------------
+
+  async saveSourceFile(record: SourceFileRecord, bytes: Uint8Array): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO source_files (
+         id, origin, url, final_url, kind, filename, content_type, byte_size, sha256, content,
+         retrieved_at, last_modified, etag, discovered_in, route, parent_id, depth, inspection, notes
+       ) VALUES ($1,'original',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+       -- The same bytes at the same URL are the same file; a re-sweep refreshes
+       -- the metadata but must never alter the preserved content.
+       ON CONFLICT (url, sha256) DO UPDATE SET
+         retrieved_at = EXCLUDED.retrieved_at,
+         last_modified = EXCLUDED.last_modified,
+         etag = EXCLUDED.etag,
+         inspection = EXCLUDED.inspection,
+         notes = EXCLUDED.notes`,
+      [
+        record.id,
+        record.url,
+        record.finalUrl,
+        record.kind,
+        record.filename,
+        record.contentType,
+        record.byteSize,
+        record.sha256,
+        Buffer.from(bytes),
+        record.retrievedAt,
+        record.lastModified,
+        record.etag,
+        record.discoveredIn,
+        record.route,
+        record.parentId,
+        record.depth,
+        JSON.stringify(record.inspection),
+        JSON.stringify(record.notes),
+      ],
+    );
+  }
+
+  async listSourceFiles(limit = 500): Promise<SourceFileRecord[]> {
+    // `content` is deliberately excluded: a listing must not drag every
+    // preserved archive through the connection.
+    const result = await this.pool.query(
+      `SELECT id, url, final_url, kind, filename, content_type, byte_size, sha256, retrieved_at,
+              last_modified, etag, discovered_in, route, parent_id, depth, inspection, notes
+       FROM source_files ORDER BY retrieved_at DESC LIMIT $1`,
+      [limit],
+    );
+    return result.rows.map(rowToSourceFile);
+  }
+
+  async getSourceFile(id: string): Promise<SourceFileRecord | null> {
+    const result = await this.pool.query(
+      `SELECT id, url, final_url, kind, filename, content_type, byte_size, sha256, retrieved_at,
+              last_modified, etag, discovered_in, route, parent_id, depth, inspection, notes
+       FROM source_files WHERE id = $1`,
+      [id],
+    );
+    const row = result.rows[0];
+    return row ? rowToSourceFile(row) : null;
+  }
+
+  async getSourceFileBytes(id: string): Promise<Uint8Array | null> {
+    const result = await this.pool.query('SELECT content FROM source_files WHERE id = $1', [id]);
+    const row = result.rows[0] as { content: Buffer } | undefined;
+    return row ? new Uint8Array(row.content) : null;
+  }
+
+  async countSourceFiles(): Promise<number> {
+    const result = await this.pool.query('SELECT COUNT(*)::int AS count FROM source_files');
+    return (result.rows[0]?.count as number) ?? 0;
+  }
+
   // --- exports -----------------------------------------------------------
 
   async saveExport(job: ExportJob): Promise<void> {
@@ -578,6 +652,31 @@ function rowToFeature(row: Row): FeatureRecord {
     kmlAvailable: Boolean(row.kml_available),
     kmlNote: String(row.kml_note ?? ''),
     sourceUrl: String(row.source_url),
+  };
+}
+
+function rowToSourceFile(row: Row): SourceFileRecord {
+  return {
+    id: String(row.id),
+    // Fixed by the table's CHECK constraint and by this type: a row in
+    // source_files is always an original.
+    origin: 'original',
+    url: String(row.url),
+    finalUrl: (row.final_url as string | null) ?? null,
+    kind: row.kind as SourceFileRecord['kind'],
+    filename: String(row.filename),
+    contentType: (row.content_type as string | null) ?? null,
+    byteSize: Number(row.byte_size),
+    sha256: String(row.sha256),
+    retrievedAt: new Date(String(row.retrieved_at)).toISOString(),
+    lastModified: (row.last_modified as string | null) ?? null,
+    etag: (row.etag as string | null) ?? null,
+    discoveredIn: String(row.discovered_in),
+    route: row.route as SourceFileRecord['route'],
+    parentId: (row.parent_id as string | null) ?? null,
+    depth: Number(row.depth ?? 0),
+    inspection: row.inspection as SourceFileRecord['inspection'],
+    notes: Array.isArray(row.notes) ? (row.notes as string[]) : [],
   };
 }
 

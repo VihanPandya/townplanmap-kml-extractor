@@ -47,6 +47,10 @@ export const GET = handler(async (request, context) => {
       'content-length': String(bytes.byteLength),
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
+      // The counterpart of the header on /api/source-files/:id/download. An
+      // automated consumer can tell a generated document from a preserved
+      // original without reading either catalog.
+      'x-artifact-origin': 'reconstructed',
       ...(job.validation && !job.validation.valid ? { 'x-kml-validation': 'failed-override' } : {}),
     },
   });

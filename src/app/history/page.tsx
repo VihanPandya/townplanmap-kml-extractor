@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from 'react';
 import { Empty, Notice, Panel, Spinner } from '@/components/ui';
+import { OriginBadge } from '@/components/origin-badge';
 
 type HistoryEntry = {
   exportId: string;
@@ -42,9 +43,13 @@ export default function HistoryPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-xl font-semibold tracking-tight">Export history</h1>
-        <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
-          Every export this instance has generated, newest first.
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-xl font-semibold tracking-tight">Export history</h1>
+          <OriginBadge origin="reconstructed" />
+        </div>
+        <p className="mt-1 max-w-3xl text-sm text-[var(--color-ink-muted)]">
+          Every export this instance has <em>generated</em>, newest first. These are reconstructions built from
+          map geometry, not files the source published — those are under <strong>Source Files</strong>.
         </p>
       </header>
 

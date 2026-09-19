@@ -22,6 +22,7 @@ import type {
   ScanResult,
 } from '@/lib/discovery/types';
 import type { ExportJob } from '@/lib/exports/types';
+import type { SourceFileRecord } from '@/lib/preservation/types';
 
 export interface CatalogStore {
   readonly kind: 'postgis' | 'memory';
@@ -51,6 +52,19 @@ export interface CatalogStore {
   countFeatures(layerId: string): Promise<number>;
   getFeature(id: string): Promise<FeatureRecord | null>;
   getFeatures(ids: string[]): Promise<FeatureRecord[]>;
+
+  /**
+   * Preserved original files.
+   *
+   * Bytes are stored and returned verbatim. Nothing in the store rewrites,
+   * re-serialises or normalises them — a preserved file must remain provably
+   * identical to what the source served.
+   */
+  saveSourceFile(record: SourceFileRecord, bytes: Uint8Array): Promise<void>;
+  listSourceFiles(limit?: number): Promise<SourceFileRecord[]>;
+  getSourceFile(id: string): Promise<SourceFileRecord | null>;
+  getSourceFileBytes(id: string): Promise<Uint8Array | null>;
+  countSourceFiles(): Promise<number>;
 
   saveExport(job: ExportJob): Promise<void>;
   getExport(id: string): Promise<ExportJob | null>;
