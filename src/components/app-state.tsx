@@ -51,6 +51,8 @@ export type BrowserAvailability = { available: boolean; defaultOn: boolean };
 
 export type ConnectOptions = {
   useBrowser?: boolean;
+  /** Open a visible window and record until the person closes it. */
+  browserHeaded?: boolean;
   /** URLs the user pasted in, typically from their own network panel. */
   extraUrls?: string[];
 };
@@ -186,6 +188,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           ...(options.useBrowser === undefined ? {} : { useBrowser: options.useBrowser }),
+          ...(options.browserHeaded === undefined ? {} : { browserHeaded: options.browserHeaded }),
           ...(options.extraUrls?.length ? { extraUrls: options.extraUrls } : {}),
         }),
       });

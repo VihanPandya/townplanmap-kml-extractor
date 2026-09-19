@@ -87,15 +87,25 @@ URLs then go through exactly the same guarded fetch path as everything else.
 ```bash
 TPM_BROWSER_SCAN=1 npm run dev          # on for every scan
 TPM_BROWSER_PATH="C:\Program Files\Google\Chrome\Application\chrome.exe" npm run dev
-TPM_BROWSER_HEADED=1 npm run dev        # watch it happen
+TPM_BROWSER_HEADED=1 npm run dev        # visible window, yours to drive
 TPM_BROWSER_SETTLE_MS=20000 npm run dev # a slow site needs longer
 ```
 
-**2. Read the Diagnostics screen.** It lists every document the scan fetched and what each one answered, every
+What the browser reads is decisive: it identifies each response from **the bytes it actually received**, so an
+endpoint at an opaque URL like `/g/7f3a2b` is recognised as GeoJSON without any second request, and without
+depending on that endpoint answering a server-side fetch the same way. Diagnostics shows the verdict per
+request in its **Is** column.
+
+**2. If that still finds nothing, drive it yourself.** Tick **Let me drive it** as well. A visible browser window
+opens and keeps recording until you close it. Use the map normally — choose your city and area, click a parcel.
+Some maps load no geometry at all until they are used, and no automated page load reproduces that; a person
+using the map does. Close the window when you are done and the scan carries on with everything it saw.
+
+**3. Read the Diagnostics screen.** It lists every document the scan fetched and what each one answered, every
 request the browser watched the site make, and every URL that was seen and dropped *with the reason*. An empty
 result stops being a dead end there. **Copy as JSON** puts the whole record on the clipboard.
 
-**3. Find the URL yourself and paste it in.** This always works:
+**4. Find the URL yourself and paste it in.** This always works:
 
 1. Open the source in your browser and press <kbd>F12</kbd>.
 2. Choose the **Network** tab and tick **Fetch/XHR**.
@@ -113,7 +123,7 @@ curl -X POST localhost:3000/api/connect \
   -d '{"useBrowser":true,"extraUrls":["https://example.gov.in/arcgis/rest/services/TP/FeatureServer/0"]}'
 ```
 
-**4. If the source refuses.** A `401` or `403` is reported exactly as it arrived. The deep scan does not change
+**5. If the source refuses.** A `401` or `403` is reported exactly as it arrived. The deep scan does not change
 that: it carries no credentials and no stored session, and it does not click through a login, a consent wall or
 a captcha. If a dataset needs authorised access through TownPlanMap, that is where to get it.
 
@@ -334,8 +344,12 @@ The deep scan is the one place the source's own code runs, so it is worth being 
   to refuse this tool can see it and refuse it.
 - It carries **no credentials, cookies, storage state or session**, and it does not click through a login, a
   consent wall or a captcha.
-- It is **one visit** with one settle period, then it closes. There is no retry loop.
-- It **observes**; it never extracts. URLs it records are fetched afterwards through the guarded path above.
+- It is **one visit**, then it closes. There is no retry loop. With **Let me drive it**, the window stays open
+  for you to use and closes when you close it.
+- It **observes**; it never extracts. It reads the responses the site received in order to identify them, and
+  the URLs it records are fetched afterwards through the guarded path above.
+- A verdict reached from real bytes is **never overturned** by a later probe. If a server-side read of the same
+  URL answers differently, both facts are kept and the difference is stated.
 
 Limits are configured through environment variables and clamped to hard ceilings in code, so they cannot be
 raised from the browser. They are all listed on the Settings screen.
@@ -402,7 +416,7 @@ TownPlanMap_Export.zip
 ## Testing
 
 ```bash
-npm test          # 286 unit tests
+npm test          # 292 unit tests
 npm run typecheck
 npm run lint
 npm run build

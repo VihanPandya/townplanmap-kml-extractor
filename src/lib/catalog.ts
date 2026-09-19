@@ -92,6 +92,8 @@ export type ConnectOptions = {
   /** Watch the site load in a locally installed browser. */
   useBrowser?: boolean;
   browserSettleMs?: number;
+  /** Open a visible window and record until the person closes it. */
+  browserHeaded?: boolean;
 };
 
 /**
@@ -109,6 +111,7 @@ export async function connect(options: ConnectOptions = {}): Promise<ConnectResu
     ...(options.seeds ? { seeds: options.seeds } : {}),
     ...(options.useBrowser === undefined ? {} : { useBrowser: options.useBrowser }),
     ...(options.browserSettleMs === undefined ? {} : { browserSettleMs: options.browserSettleMs }),
+    ...(options.browserHeaded === undefined ? {} : { browserHeaded: options.browserHeaded }),
   });
 
   // The fixture source is opt-in. It is always announced, and when it is the

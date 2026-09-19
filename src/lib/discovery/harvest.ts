@@ -11,7 +11,13 @@
  */
 
 import { classifyUrl } from '@/lib/geo/detect';
-import type { DiscoveredEndpoint, ObservedRequest, RejectedCandidate } from './types';
+import type {
+  DataNature,
+  DiscoveredEndpoint,
+  EndpointKind,
+  ObservedRequest,
+  RejectedCandidate,
+} from './types';
 
 /** Absolute http(s) URLs and root/relative paths inside quotes. */
 const ABSOLUTE_URL = /https?:\/\/[^\s"'`<>()\\]{4,400}/gi;
@@ -98,6 +104,12 @@ export type Candidate = {
   url: string;
   discoveredIn: string;
   evidence: string[];
+  /**
+   * A verdict already reached from the response's own bytes. Present only for
+   * a request a browser watched and read; it supersedes any guess the URL
+   * could support.
+   */
+  detection?: { kind: EndpointKind; nature: DataNature; evidence: string[] };
 };
 
 function normalise(raw: string, baseUrl: string): string | null {
@@ -274,14 +286,27 @@ export function candidatesFromObservations(
     }
     evidence.push(...interestOf(observation.url));
 
+    if (observation.detected) evidence.push(...observation.detected.evidence);
+
     found.set(observation.url, {
       url: observation.url,
       discoveredIn: 'the requests the site made in a browser',
       evidence,
+      ...(observation.detected ? { detection: observation.detected } : {}),
     });
   }
 
-  return [...found.values()];
+  // The probe budget is finite, so what the bytes already said goes first,
+  // then what the response declared, then everything else.
+  const weight = (candidate: Candidate): number => {
+    if (candidate.detection?.nature === 'vector') return 0;
+    if (candidate.detection?.nature === 'metadata') return 1;
+    if (candidate.detection?.nature === 'raster') return 3;
+    if (candidate.detection) return 2;
+    return 2;
+  };
+
+  return [...found.values()].sort((a, b) => weight(a) - weight(b));
 }
 
 /**
@@ -324,17 +349,23 @@ export function toEndpoints(candidates: Candidate[]): DiscoveredEndpoint[] {
 
   return candidates
     .map((candidate, index) => {
-      const detection = classifyUrl(candidate.url);
+      // A verdict from the bytes outranks anything the URL could suggest.
+      const detection = candidate.detection ?? classifyUrl(candidate.url);
       return {
         id: `ep_${index}_${hash(candidate.url)}`,
         url: candidate.url,
         kind: detection.kind,
         nature: detection.nature,
         discoveredIn: candidate.discoveredIn,
-        evidence: [...candidate.evidence, ...detection.evidence],
+        evidence: [...candidate.evidence, ...(candidate.detection ? [] : detection.evidence)],
+        ...(candidate.detection ? { bodyVerified: true } : {}),
       } satisfies DiscoveredEndpoint;
     })
-    .sort((a, b) => rank(a.kind) - rank(b.kind));
+    .sort((a, b) => {
+      // Anything already known to carry geometry is probed first.
+      const byNature = (endpoint: DiscoveredEndpoint) => (endpoint.nature === 'vector' ? 0 : 1);
+      return byNature(a) - byNature(b) || rank(a.kind) - rank(b.kind);
+    });
 }
 
 /** Short stable id fragment for a URL. */

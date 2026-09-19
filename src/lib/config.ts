@@ -95,6 +95,14 @@ export const BROWSER = {
   navigationTimeoutMs: intFromEnv('TPM_BROWSER_TIMEOUT_MS', 45_000, 180_000),
   /** How long to keep listening after load, for data fetched asynchronously. */
   settleMs: intFromEnv('TPM_BROWSER_SETTLE_MS', 9_000, 120_000),
+  /**
+   * How long to keep recording when the window is visible.
+   *
+   * A visible window is there to be driven: some maps load nothing until a
+   * city is chosen or a parcel clicked, and no automated page load reproduces
+   * that. Recording continues until the window is closed or this runs out.
+   */
+  headedSettleMs: intFromEnv('TPM_BROWSER_HEADED_SETTLE_MS', 300_000, 1_800_000),
   /** Requests recorded from one page visit. */
   maxObservedRequests: intFromEnv('TPM_BROWSER_MAX_REQUESTS', 500, 5_000),
 } as const;

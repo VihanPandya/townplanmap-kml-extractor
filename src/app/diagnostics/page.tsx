@@ -225,14 +225,27 @@ function BrowserPanel({
 
   const observed = useMemo(() => {
     const all = browser?.observed ?? [];
-    if (!filter.trim()) return all;
     const needle = filter.trim().toLowerCase();
-    return all.filter(
-      (request) =>
-        request.url.toLowerCase().includes(needle) ||
-        request.resourceType.toLowerCase().includes(needle) ||
-        (request.contentType ?? '').toLowerCase().includes(needle),
-    );
+    const matched = needle
+      ? all.filter(
+          (request) =>
+            request.url.toLowerCase().includes(needle) ||
+            request.resourceType.toLowerCase().includes(needle) ||
+            (request.detected?.kind ?? '').toLowerCase().includes(needle) ||
+            (request.contentType ?? '').toLowerCase().includes(needle),
+        )
+      : [...all];
+
+    // What the bytes turned out to be decides the order, so the interesting
+    // rows are at the top rather than buried under a hundred asset requests.
+    const weight = (request: ObservedRequest): number => {
+      if (request.detected?.nature === 'vector') return 0;
+      if (request.detected?.nature === 'raster') return 1;
+      if (request.detected) return 2;
+      if (request.resourceType === 'xhr' || request.resourceType === 'fetch') return 3;
+      return 4;
+    };
+    return matched.sort((a, b) => weight(a) - weight(b));
   }, [browser, filter]);
 
   if (!browser) {
@@ -281,8 +294,10 @@ function BrowserPanel({
       </dl>
 
       <p className="mb-3 text-xs text-[var(--color-ink-subtle)]">
-        Every row is a request the site made for itself. If the map is drawing real geometry, the URL that serves it is
-        in this list. Anything here can be pasted into “Add an endpoint” on the dashboard.
+        Every row is a request the site made for itself, most interesting first. Where the browser could read the
+        response, the <strong>Is</strong> column says what the bytes actually were — that verdict comes from the
+        data the site received, not from a guess about the URL. Anything here can be pasted into “Add an
+        endpoint” on the dashboard.
       </p>
 
       {observed.length === 0 ? (
@@ -294,6 +309,7 @@ function BrowserPanel({
               <tr>
                 <th className="py-1.5 pr-3 font-medium">Type</th>
                 <th className="py-1.5 pr-3 font-medium">Status</th>
+                <th className="py-1.5 pr-3 font-medium">Is</th>
                 <th className="py-1.5 pr-3 font-medium">Content type</th>
                 <th className="py-1.5 font-medium">URL</th>
               </tr>
@@ -311,7 +327,8 @@ function BrowserPanel({
 }
 
 function ObservedRow({ request }: { request: ObservedRequest }) {
-  const interesting = /json|xml|protobuf|octet-stream/i.test(request.contentType ?? '');
+  const nature = request.detected?.nature;
+  const interesting = nature === 'vector' || /json|xml|protobuf|octet-stream/i.test(request.contentType ?? '');
   return (
     <tr className="border-t border-[var(--color-border)] align-top">
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-ink-muted)]">
@@ -324,6 +341,23 @@ function ObservedRow({ request }: { request: ObservedRequest }) {
           <span className="text-[var(--color-warn)]">failed</span>
         ) : (
           (request.status ?? '—')
+        )}
+      </td>
+      <td className="py-1.5 pr-3 whitespace-nowrap">
+        {request.detected ? (
+          <span
+            className={
+              nature === 'vector'
+                ? 'text-[var(--color-good)]'
+                : nature === 'raster'
+                  ? 'text-[var(--color-warn)]'
+                  : 'text-[var(--color-ink-subtle)]'
+            }
+          >
+            {request.detected.kind}
+          </span>
+        ) : (
+          <span className="text-[var(--color-ink-subtle)]">not read</span>
         )}
       </td>
       <td className="py-1.5 pr-3 whitespace-nowrap text-[var(--color-ink-subtle)]">

@@ -126,9 +126,25 @@ It opens the source in a Chrome, Chromium or Edge installation already on the ma
 run, and writes down every request it makes. If the map is drawing real geometry, the URL that serves it is in
 that list by construction — the site asked for it.
 
-What the browser produces is a **list of URLs and nothing more**. Each one then goes through the same probe,
-the same classification and the same SSRF-guarded fetcher as a URL found any other way. The browser observes;
-it never extracts.
+The browser also **reads the responses it receives** and identifies each one from its actual bytes. This matters
+more than it sounds: an endpoint at `/g/7f3a2b` says nothing about itself, and a declared content type is
+frequently wrong, but the bytes are not. It also removes a dependency — the endpoint does not have to answer a
+bare server-side request the same way it answered the site's own. A verdict reached this way is never overturned
+by a later probe; if a server-side read disagrees, both facts are kept and the difference is stated, because
+that difference is about whether the endpoint can be *read* from here, not about what it serves.
+
+What the browser hands on is a list of URLs, each with what its response turned out to be. Everything after
+that is the same probe, the same providers and the same SSRF-guarded fetcher as a URL found any other way. The
+browser observes; it never extracts.
+
+Code is not data, and is treated as such: a script bundle or the page document is never a candidate endpoint,
+however the site labels the request. A code-split application ships dozens of chunks, and probing them would
+spend the entire request budget learning that JavaScript is JavaScript while the real endpoints wait behind
+them. Bundles are read for the URLs inside them by the text pass; that is where they belong.
+
+One thing a page load cannot reproduce is a person. Some maps fetch no geometry until a city is chosen or a
+parcel clicked. **Let me drive it** opens a visible window and keeps recording until it is closed, so the
+requests that only happen in response to real use are recorded too.
 
 It is also deliberately unsubtle about being there:
 
@@ -138,7 +154,7 @@ It is also deliberately unsubtle about being there:
 - **no login, consent wall or captcha is clicked through**;
 - every request it makes is checked against **the same address rules** as the server-side fetcher, so one aimed
   at a private, loopback or link-local address is aborted before it leaves the machine;
-- it is **one visit** with one settle period, then it closes.
+- it is **one visit**, then it closes — or, driven, it closes when you close the window.
 
 Because it runs the source's code, it is off unless asked for. `TPM_BROWSER_SCAN=1` turns it on by default.
 
@@ -587,6 +603,8 @@ The tool's failure behaviour is a feature, so here it is in one place:
 | A NetworkLink chain runs deep | Followed to the configured depth, then what was left unfollowed is named |
 | Nothing at all is discovered | Diagnostics names every document read and every URL rejected, and the connection screen lists the next steps |
 | The site builds its data URLs at runtime | The plain scan finds nothing and says to watch the site in a browser; the browser pass then records the real URLs |
+| The map loads nothing until it is used | "Let me drive it" opens a visible window and records while you use the map |
+| An endpoint answers the site but not a bare server-side request | The verdict from the bytes the site received stands; the difference is recorded as a readability problem, not a classification one |
 | No browser is installed for the deep scan | Reported with the reason and how to fix it; the plain scan still runs |
 | The browser cannot reach the site | Recorded as a network failure, distinct from a refusal by this tool's own rules |
 | A URL is pasted in by hand | Probed directly, classified from the body it returns, and shown as supplied by hand rather than discovered |

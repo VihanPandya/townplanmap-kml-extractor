@@ -186,12 +186,17 @@ function ConnectionPanel() {
   // than stored, so it follows availability until the user decides otherwise.
   const [deepScanChoice, setDeepScanChoice] = useState<boolean | null>(null);
   const deepScan = deepScanChoice ?? browser.available;
+  const [headed, setHeaded] = useState(false);
   const [manualUrls, setManualUrls] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  const useBrowser = deepScan && browser.available;
+  const driveIt = useBrowser && headed;
+
   const run = () =>
     void connect({
-      useBrowser: deepScan && browser.available,
+      useBrowser,
+      browserHeaded: driveIt,
       extraUrls: manualUrls
         .split(/[\s,]+/)
         .map((entry) => entry.trim())
@@ -217,6 +222,25 @@ function ConnectionPanel() {
                 'them. Slower, and it runs the site’s own code.'
               : 'Unavailable: no Chrome, Chromium or Edge installation was found, or the optional ' +
                 'playwright-core package is not installed. Run npm install playwright-core, or set TPM_BROWSER_PATH.'}
+          </span>
+        </span>
+      </label>
+
+      <label className={`flex items-start gap-2 text-sm ${useBrowser ? '' : 'opacity-50'}`}>
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={driveIt}
+          disabled={!useBrowser}
+          onChange={(event) => setHeaded(event.target.checked)}
+        />
+        <span>
+          <span className="text-[var(--color-ink)]">Let me drive it</span>
+          <span className="block text-xs text-[var(--color-ink-subtle)]">
+            Opens a visible window instead of a hidden one and keeps recording until you close it. Use the map
+            normally — choose your city and area, click a parcel — and every request the site makes while you do is
+            recorded. This is how to reach data the map only loads in response to being used. Close the window when
+            you are done.
           </span>
         </span>
       </label>
@@ -304,7 +328,7 @@ function ConnectionPanel() {
 
           <div className="flex flex-wrap gap-2">
             <button type="button" className="btn btn-secondary flex-1" onClick={run}>
-              {deepScan && browser.available ? 'Re-scan, watching in a browser' : 'Re-scan the source'}
+              {driveIt ? 'Open the site and record while I use it' : useBrowser ? 'Re-scan, watching in a browser' : 'Re-scan the source'}
             </button>
             <button
               type="button"
@@ -321,17 +345,24 @@ function ConnectionPanel() {
         <div className="space-y-3 py-2">
           <Spinner
             label={
-              deepScan && browser.available
-                ? 'Opening the site in a browser and recording what it loads\u2026'
-                : 'Reading the landing page, its scripts and its data endpoints\u2026'
+              driveIt
+                ? 'A browser window is open \u2014 use the map, then close the window\u2026'
+                : useBrowser
+                  ? 'Opening the site in a browser and recording what it loads\u2026'
+                  : 'Reading the landing page, its scripts and its data endpoints\u2026'
             }
           />
           <p className="text-xs text-[var(--color-ink-subtle)]">
-            {deepScan && browser.available
-              ? 'The page is loaded in a browser on this machine so the requests it makes for itself can be written ' +
-                'down. Those URLs are then fetched through the usual guarded path. This takes up to a minute.'
-              : 'The scan reads the page and its JavaScript as text, harvests candidate data endpoints, then probes ' +
-                'the most promising ones to see whether they serve real geometry or only imagery.'}
+            {driveIt
+              ? 'Go to the window that just opened and use the site as you normally would: choose your city and ' +
+                'area, and click a parcel. Every request it makes is being recorded. Close the window when you are ' +
+                'done and the scan will carry on with what it saw.'
+              : useBrowser
+                ? 'The page is loaded in a browser on this machine so the requests it makes for itself can be ' +
+                  'written down. Those URLs are then fetched through the usual guarded path. This takes up to a ' +
+                  'minute.'
+                : 'The scan reads the page and its JavaScript as text, harvests candidate data endpoints, then ' +
+                  'probes the most promising ones to see whether they serve real geometry or only imagery.'}
           </p>
         </div>
       ) : connection.status === 'failed' ? (

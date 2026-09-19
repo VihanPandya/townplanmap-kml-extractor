@@ -183,6 +183,104 @@ describe('a front-end that builds its data URLs at runtime', () => {
     expect(scan.endpoints.some((endpoint) => endpoint.url.endsWith('/api/v1/parcels'))).toBe(false);
   });
 
+  it('accepts a verdict reached from the bytes the browser received', async () => {
+    // The URL says nothing: no extension, no service path, no geographic word.
+    // Only the response settles it, and the browser already has the response.
+    const opaque = `${HOST}/g/7f3a2b`;
+    observed = [
+      {
+        url: opaque,
+        method: 'GET',
+        resourceType: 'xhr',
+        status: 200,
+        contentType: 'application/json',
+        bytes: 400,
+        detected: {
+          kind: 'geojson',
+          nature: 'vector',
+          evidence: ['Classified from the bytes the browser itself received, not from a second request.'],
+        },
+      },
+    ];
+    recorder = new FetchRecorder([
+      ...BASE_ROUTES,
+      { match: (url) => url.pathname === '/g/7f3a2b', respond: () => ({ json: PARCELS, contentType: 'application/json' }) },
+    ]);
+
+    const scan = await runDiscoveryScan({ baseUrl: `${HOST}/`, useBrowser: true });
+    const found = scan.endpoints.find((endpoint) => endpoint.url === opaque);
+
+    expect(found?.nature).toBe('vector');
+    expect(found?.bodyVerified).toBe(true);
+    expect(scan.geographicLayersDetected).toBe(true);
+  });
+
+  it('does not let a server-side probe overturn what the site actually received', async () => {
+    // The endpoint answers the site with GeoJSON and answers a bare
+    // server-side request with the application shell — a redirect to a sign-in
+    // page, an error document, a single-page app index. That says something
+    // about reading it from here, and nothing about what it serves.
+    const url = `${HOST}/api/v1/parcels`;
+    observed = [
+      {
+        url,
+        method: 'GET',
+        resourceType: 'fetch',
+        status: 200,
+        contentType: 'application/geo+json',
+        bytes: 400,
+        detected: { kind: 'geojson', nature: 'vector', evidence: ['Classified from the bytes the browser itself received, not from a second request.'] },
+      },
+    ];
+    recorder = new FetchRecorder([
+      { match: (url2) => url2.pathname === '/', respond: () => ({ text: PAGE, contentType: 'text/html' }) },
+      {
+        match: (url2) => url2.pathname === '/static/main.9f2a.js',
+        respond: () => ({ text: BUNDLE, contentType: 'application/javascript' }),
+      },
+      {
+        match: (url2) => url2.pathname === '/api/v1/parcels',
+        respond: () => ({ text: '<!doctype html><html><body>Sign in</body></html>', contentType: 'text/html' }),
+      },
+    ]);
+
+    const scan = await runDiscoveryScan({ baseUrl: `${HOST}/`, useBrowser: true });
+    const found = scan.endpoints.find((endpoint) => endpoint.url === url);
+
+    expect(found?.nature).toBe('vector');
+    expect(found?.kind).toBe('geojson');
+    expect(found?.evidence.join(' ')).toContain('answered differently');
+  });
+
+  it('spends its probes on data rather than on the application\u2019s own code', async () => {
+    observed = [
+      ...Array.from({ length: 30 }, (_, index) => ({
+        url: `${HOST}/_next/static/chunks/${index}.js`,
+        method: 'GET',
+        resourceType: 'script',
+        status: 200,
+        contentType: 'application/javascript',
+        bytes: 90_000,
+      })),
+      {
+        url: `${HOST}/api/v1/parcels`,
+        method: 'GET',
+        resourceType: 'fetch',
+        status: 200,
+        contentType: 'application/geo+json',
+        bytes: 400,
+      },
+    ];
+
+    const scan = await runDiscoveryScan({ baseUrl: `${HOST}/`, useBrowser: true });
+
+    expect(scan.endpoints.some((endpoint) => endpoint.url.includes('/chunks/'))).toBe(false);
+    expect(scan.endpoints.some((endpoint) => endpoint.url.endsWith('/api/v1/parcels'))).toBe(true);
+    expect(scan.geographicLayersDetected).toBe(true);
+    // One probe, not thirty-one.
+    expect(scan.diagnostics?.candidatesProbed).toBe(1);
+  });
+
   it('reports the browser being unavailable rather than failing silently', async () => {
     browserOk = false;
     const scan = await runDiscoveryScan({ baseUrl: `${HOST}/`, useBrowser: true });

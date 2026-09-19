@@ -23,7 +23,8 @@ export const maxDuration = 300;
 const connectSchema = z
   .object({
     useBrowser: z.boolean().optional(),
-    browserSettleMs: z.number().int().positive().max(120_000).optional(),
+    browserHeaded: z.boolean().optional(),
+    browserSettleMs: z.number().int().positive().max(1_800_000).optional(),
     extraUrls: z.array(z.string().min(1).max(2_000)).max(50).optional(),
   })
   .default({});
@@ -54,6 +55,7 @@ export const POST = handler(async (request) => {
     ...(seeds.length > 0 ? { seeds } : {}),
     ...(options.useBrowser === undefined ? {} : { useBrowser: options.useBrowser }),
     ...(options.browserSettleMs === undefined ? {} : { browserSettleMs: options.browserSettleMs }),
+    ...(options.browserHeaded === undefined ? {} : { browserHeaded: options.browserHeaded }),
   });
 
   if (!result.scan.connected) {

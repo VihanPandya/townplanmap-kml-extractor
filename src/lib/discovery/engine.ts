@@ -55,6 +55,11 @@ export type ScanOptions = {
   useBrowser?: boolean;
   /** Override how long the browser listens after the page loads. */
   browserSettleMs?: number;
+  /**
+   * Open a visible window and keep recording until it is closed. The way to
+   * reach data a map loads only in response to a person using it.
+   */
+  browserHeaded?: boolean;
 };
 
 export async function runDiscoveryScan(options: ScanOptions = {}): Promise<ScanResult> {
@@ -164,6 +169,7 @@ export async function runDiscoveryScan(options: ScanOptions = {}): Promise<ScanR
       url: baseUrl,
       signal: options.signal,
       settleMs: options.browserSettleMs,
+      ...(options.browserHeaded === undefined ? {} : { headless: !options.browserHeaded }),
     });
 
     if (observation.ok) {
@@ -332,7 +338,7 @@ export async function runDiscoveryScan(options: ScanOptions = {}): Promise<ScanR
       probed.push(endpoint); // Keep it listed, unprobed and honestly marked so.
       continue;
     }
-    const result = await probeEndpoint(endpoint, budget, options.signal);
+    const result = keepBodyVerdict(endpoint, await probeEndpoint(endpoint, budget, options.signal));
     candidatesProbed += 1;
     recordDocument({
       url: endpoint.url,
@@ -371,7 +377,7 @@ export async function runDiscoveryScan(options: ScanOptions = {}): Promise<ScanR
       secondRound.push(endpoint);
       continue;
     }
-    const result = await probeEndpoint(endpoint, budget, options.signal);
+    const result = keepBodyVerdict(endpoint, await probeEndpoint(endpoint, budget, options.signal));
     candidatesProbed += 1;
     recordDocument({
       url: endpoint.url,
@@ -446,10 +452,20 @@ function buildAdvice(input: {
           'Watching the site load is the only way to catch them.',
       );
     } else {
+      const read = browser.observed.filter((request) => request.detected).length;
+      const kinds = [
+        ...new Set(
+          browser.observed
+            .map((request) => request.detected?.kind)
+            .filter((kind): kind is NonNullable<typeof kind> => Boolean(kind) && kind !== 'unknown'),
+        ),
+      ];
       advice.push(
-        `The browser watched the site make ${browser.requestsObserved} request(s) and none of them turned out to ` +
-          'serve vector geometry. Give the page longer to settle (raise TPM_BROWSER_SETTLE_MS), or check the ' +
-          'Observed requests list below for a URL the tool skipped.',
+        `The browser watched the site make ${browser.requestsObserved} request(s) and read ${read} of the ` +
+          `responses. None of them carried vector geometry${
+            kinds.length > 0 ? `; what they did carry was: ${kinds.join(', ')}` : ''
+          }. Give the page longer to settle (raise TPM_BROWSER_SETTLE_MS), and pan or zoom the map once the ` +
+          'window opens — with TPM_BROWSER_HEADED=1 you can watch it and interact with it while it records.',
       );
     }
 
@@ -480,6 +496,34 @@ function buildAdvice(input: {
   }
 
   return advice;
+}
+
+/**
+ * A probe never overturns a verdict already reached from real bytes.
+ *
+ * An endpoint the browser watched the site fetch, and whose response the
+ * browser read, is known data. A server-side probe of the same URL can answer
+ * differently — an application shell, a redirect to a sign-in page, an error
+ * document — because it arrives without the context the site's own request
+ * had. That tells us something useful about whether the endpoint can be read
+ * from here, and nothing at all about what it serves. Both facts are kept, and
+ * neither is allowed to erase the other.
+ */
+function keepBodyVerdict(before: DiscoveredEndpoint, after: DiscoveredEndpoint): DiscoveredEndpoint {
+  if (!before.bodyVerified || after.nature === before.nature) return after;
+
+  return {
+    ...after,
+    kind: before.kind,
+    nature: before.nature,
+    bodyVerified: true,
+    evidence: [
+      ...after.evidence,
+      `A direct read of this URL from the server answered differently (${after.nature}). The classification ` +
+        'above stands: it came from the bytes the site itself received. The difference is recorded because it ' +
+        'may mean this endpoint cannot be read from here without the context the site\u2019s own request had.',
+    ],
+  };
 }
 
 function dedupe(endpoints: DiscoveredEndpoint[]): DiscoveredEndpoint[] {

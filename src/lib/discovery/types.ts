@@ -44,6 +44,13 @@ export type DiscoveredEndpoint = {
   /** Where the URL was found: which document, and by what rule. */
   discoveredIn: string;
   evidence: string[];
+  /**
+   * True when the classification came from bytes that were actually received,
+   * rather than from the shape of the URL. A browser that read the response
+   * has settled the question; a later probe that cannot reproduce the read
+   * does not unsettle it.
+   */
+  bodyVerified?: boolean;
   /** Populated once the endpoint has been probed. */
   probe?: EndpointProbe;
 };
@@ -159,6 +166,15 @@ export type ObservedRequest = {
   blockedReason?: string;
   /** Set when the network, not this tool, ended the request. */
   failureReason?: string;
+  /**
+   * What the bytes the browser received actually were.
+   *
+   * The browser already holds the response, so reading it here settles the
+   * question outright: no second request, no reliance on a declared content
+   * type, and no dependence on the endpoint answering a server-side fetch the
+   * same way it answered the site's own.
+   */
+  detected?: { kind: EndpointKind; nature: DataNature; evidence: string[] };
 };
 
 /** Why a harvested URL was not pursued. */

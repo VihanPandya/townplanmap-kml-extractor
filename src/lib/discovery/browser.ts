@@ -30,7 +30,15 @@ import { join } from 'node:path';
 
 import { BROWSER, USER_AGENT } from '@/lib/config';
 import { assertSafeUrl } from '@/lib/net/ssrf';
+import { classifyBody, classifyUrl } from '@/lib/geo/detect';
 import type { ObservedRequest } from './types';
+
+/** Responses whose bytes are read and classified during one visit. */
+const MAX_BODY_READS = 120;
+/** Bytes of a response kept for classification. Enough to identify any format. */
+const BODY_SAMPLE_BYTES = 128 * 1024;
+/** Responses larger than this are identified by their first bytes alone. */
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 export type BrowserObservation =
   | {
@@ -111,6 +119,11 @@ const INSTALL_HINT =
   'Install the driver with `npm install playwright-core`, then make sure Google Chrome, Chromium or ' +
   'Microsoft Edge is installed. Set TPM_BROWSER_PATH to the executable if it lives somewhere unusual.';
 
+/** A plain timer, usable after the page it would have belonged to has closed. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * The first line of a driver error.
  *
@@ -122,10 +135,23 @@ function briefly(error: unknown): string {
   return (message.split('\n')[0] ?? message).replace(/\s*Call log:.*$/i, '').trim();
 }
 
-/** Whether a response body is worth classifying rather than ignoring. */
-function isInteresting(resourceType: string): boolean {
-  return resourceType === 'xhr' || resourceType === 'fetch' || resourceType === 'document' ||
-    resourceType === 'other' || resourceType === 'script';
+/**
+ * Whether a response is worth reading the bytes of.
+ *
+ * Code, markup and styling are not data, however the site labels them; a
+ * bundle is read for the URLs inside it by the text pass, not here.
+ */
+function worthReading(resourceType: string, contentType: string | null, bytes: number | null): boolean {
+  if (bytes !== null && bytes > MAX_BODY_BYTES) return false;
+  const type = (contentType ?? '').toLowerCase();
+  if (type.startsWith('text/css') || type.startsWith('font/') || type.startsWith('video/') || type.startsWith('audio/')) {
+    return false;
+  }
+  if (resourceType === 'xhr' || resourceType === 'fetch' || resourceType === 'other') return true;
+  // A vector tile is usually fetched as an image or "other" and is worth
+  // identifying; a PNG tile is identified by its own magic bytes and reported
+  // honestly as imagery.
+  return resourceType === 'image' && /protobuf|octet-stream|mvt|pbf/i.test(type);
 }
 
 /**
@@ -269,18 +295,65 @@ export async function observeInBrowser(options: BrowserScanOptions): Promise<Bro
       requests.push(observation);
     }
 
+    // Reading a response body is asynchronous, but the event is not; the reads
+    // are collected and awaited before the browser closes.
+    const bodyReads: Array<Promise<void>> = [];
+    let bodiesRead = 0;
+
     context.on('response', (response) => {
       const request = response.request();
       const headers = response.headers();
+      const contentType = headers['content-type'] ?? null;
       const length = Number.parseInt(headers['content-length'] ?? '', 10);
+      const bytes = Number.isFinite(length) ? length : null;
+      const key = `${request.method()} ${response.url()}`;
+
       record({
         url: response.url(),
         method: request.method(),
         resourceType: request.resourceType(),
         status: response.status(),
-        contentType: headers['content-type'] ?? null,
-        bytes: Number.isFinite(length) ? length : null,
+        contentType,
+        bytes,
       });
+
+      if (
+        bodiesRead >= MAX_BODY_READS ||
+        !worthReading(request.resourceType(), contentType, bytes) ||
+        response.status() >= 400
+      ) {
+        return;
+      }
+      bodiesRead += 1;
+
+      bodyReads.push(
+        (async () => {
+          try {
+            const buffer = await response.body();
+            const sample = new Uint8Array(
+              buffer.buffer,
+              buffer.byteOffset,
+              Math.min(buffer.byteLength, BODY_SAMPLE_BYTES),
+            );
+            const detection = classifyBody(sample, contentType ?? '', classifyUrl(response.url()));
+            const stored = byKey.get(key);
+            if (stored) {
+              stored.detected = {
+                kind: detection.kind,
+                nature: detection.nature,
+                evidence: [
+                  'Classified from the bytes the browser itself received, not from a second request.',
+                  ...detection.evidence,
+                ],
+              };
+              if (stored.bytes === null) stored.bytes = buffer.byteLength;
+            }
+          } catch {
+            // A body can be unavailable once the page has moved on. The request
+            // is still recorded; it simply goes to the probe unclassified.
+          }
+        })(),
+      );
     });
 
     context.on('requestfailed', (request) => {
@@ -302,6 +375,7 @@ export async function observeInBrowser(options: BrowserScanOptions): Promise<Bro
     });
 
     const page = await context.newPage();
+    const headless = options.headless ?? BROWSER.headless;
 
     let finalUrl = options.url;
     let title = '';
@@ -322,16 +396,37 @@ export async function observeInBrowser(options: BrowserScanOptions): Promise<Bro
       );
     }
 
-    // Let asynchronous data loads happen. A map front-end typically fetches its
-    // configuration, then its layer list, then the layer data — three round
-    // trips that all land after `domcontentloaded`.
-    const settleMs = options.settleMs ?? BROWSER.settleMs;
-    try {
-      await page.waitForLoadState('networkidle', { timeout: settleMs });
-    } catch {
-      notes.push('The page was still making requests when the settle period ended.');
+    const settleMs = options.settleMs ?? (headless ? BROWSER.settleMs : BROWSER.headedSettleMs);
+
+    if (headless) {
+      // Let asynchronous data loads happen. A map front-end typically fetches
+      // its configuration, then its layer list, then the layer data — three
+      // round trips that all land after `domcontentloaded`.
+      try {
+        await page.waitForLoadState('networkidle', { timeout: settleMs });
+      } catch {
+        notes.push('The page was still making requests when the settle period ended.');
+      }
+      await sleep(Math.min(settleMs, 4_000));
+    } else {
+      // A visible window is there to be driven. Some maps load nothing at all
+      // until a city is chosen or a parcel clicked, and no automated page load
+      // reproduces that — but a person using the map does, and every request
+      // it makes is recorded while they do.
+      notes.push(
+        'The browser window was opened for you to use. Every request the site made while it was open was ' +
+          'recorded, including the ones it only makes after a city is selected or a parcel is clicked.',
+      );
+      const closed = await Promise.race([
+        page.waitForEvent('close').then(() => true).catch(() => false),
+        sleep(settleMs).then(() => false),
+      ]);
+      notes.push(
+        closed
+          ? 'Recording stopped when you closed the window.'
+          : `Recording stopped after ${Math.round(settleMs / 1000)} s. Raise TPM_BROWSER_HEADED_SETTLE_MS for longer.`,
+      );
     }
-    await page.waitForTimeout(Math.min(settleMs, 4_000));
 
     try {
       finalUrl = page.url();
@@ -342,6 +437,13 @@ export async function observeInBrowser(options: BrowserScanOptions): Promise<Bro
 
     if (options.signal?.aborted) {
       notes.push('The scan was cancelled; only the requests recorded up to that point are listed.');
+    }
+
+    // Settle the outstanding body reads before the browser goes away.
+    await Promise.allSettled(bodyReads);
+    const classified = requests.filter((request) => request.detected).length;
+    if (classified > 0) {
+      notes.push(`${classified} of those responses were identified from the bytes the browser received.`);
     }
 
     if (requests.length >= BROWSER.maxObservedRequests) {
@@ -366,12 +468,28 @@ export async function observeInBrowser(options: BrowserScanOptions): Promise<Bro
 export function worthPursuing(observation: ObservedRequest): boolean {
   if (observation.blockedReason || observation.failureReason) return false;
   if (observation.status !== null && observation.status >= 400) return false;
+
+  // Bytes beat every other signal. If the browser read the response and it was
+  // geographic data, it is a candidate whatever the site called the request.
+  if (observation.detected) {
+    if (observation.detected.nature === 'vector' || observation.detected.nature === 'raster') return true;
+  }
+
   const type = observation.resourceType;
   if (type === 'stylesheet' || type === 'font' || type === 'media' || type === 'websocket') return false;
+
+  // A script or the page document is code and markup, not data. Probing one
+  // spends a request to learn it is JavaScript, and a code-split application
+  // ships dozens of them — enough to crowd every real endpoint out of the
+  // probe queue. The text pass reads bundles for the URLs inside them; that is
+  // where they belong.
+  if (type === 'script' || type === 'document') return false;
+
   if (type === 'image') {
     // A tile served as an image still matters: it tells us the map is raster,
     // and the template behind it is worth recording.
     return /\{[zxy]\}|\/\d+\/\d+\/\d+(\.\w+)?(\?|$)|(wms|wmts)/i.test(observation.url);
   }
-  return isInteresting(type);
+
+  return type === 'xhr' || type === 'fetch' || type === 'other';
 }

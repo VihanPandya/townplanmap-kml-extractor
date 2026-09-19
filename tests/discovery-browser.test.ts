@@ -26,6 +26,7 @@ vi.mock('@/lib/net/ssrf', () => ({
 }));
 
 const { observeInBrowser, findBrowser, worthPursuing } = await import('@/lib/discovery/browser');
+const { runDiscoveryScan } = await import('@/lib/discovery/engine');
 const { candidatesFromObservations, harvestCandidates, extractInlineScripts } = await import(
   '@/lib/discovery/harvest'
 );
@@ -135,6 +136,34 @@ describe.skipIf(!browserAvailable)('watching the page in a browser', () => {
     expect(data?.resourceType === 'fetch' || data?.resourceType === 'xhr').toBe(true);
   }, 90_000);
 
+  it('identifies the response from the bytes it received, without a second request', async () => {
+    const observation = await observeInBrowser({ url: `${origin}/`, settleMs: 4_000 });
+    if (!observation.ok) throw new Error(observation.reason);
+
+    const data = observation.requests.find((request) => request.url.includes('/api/v2/data'));
+    expect(data?.detected?.nature).toBe('vector');
+    expect(data?.detected?.kind).toBe('geojson');
+    expect(data?.detected?.evidence.join(' ')).toContain('bytes the browser itself received');
+    expect(worthPursuing(data!)).toBe(true);
+  }, 90_000);
+
+  it('does not treat the application\u2019s own code as a data endpoint', async () => {
+    const observation = await observeInBrowser({ url: `${origin}/`, settleMs: 4_000 });
+    if (!observation.ok) throw new Error(observation.reason);
+
+    const bundle = observation.requests.find((request) => request.url.endsWith('app.bundle.js'));
+    expect(bundle, 'the bundle should have been observed').toBeDefined();
+    expect(bundle?.resourceType).toBe('script');
+
+    // A code-split application ships dozens of these. Probing them spends the
+    // whole budget on learning that JavaScript is JavaScript, and crowds the
+    // real endpoints out of the queue.
+    expect(worthPursuing(bundle!)).toBe(false);
+    expect(observation.requests.filter(worthPursuing).every((request) => request.resourceType !== 'script')).toBe(
+      true,
+    );
+  }, 90_000);
+
   it('turns what it saw into candidates the pipeline can probe', async () => {
     const observation = await observeInBrowser({ url: `${origin}/`, settleMs: 4_000 });
     if (!observation.ok) throw new Error(observation.reason);
@@ -170,4 +199,27 @@ describe.skipIf(!browserAvailable)('watching the page in a browser', () => {
     // disguised, and "Headless" is not scrubbed out.
     expect(seen[0]).toMatch(/Chrome|Chromium|Edg/);
   }, 90_000);
+});
+
+describe.skipIf(!browserAvailable)('the whole scan, end to end', () => {
+  it('turns a runtime-built URL into an exportable vector endpoint', async () => {
+    const textOnly = await runDiscoveryScan({ baseUrl: `${origin}/`, useBrowser: false });
+    expect(textOnly.connected).toBe(true);
+    expect(textOnly.geographicLayersDetected, 'a text read cannot find it').toBe(false);
+    expect(textOnly.diagnostics?.advice.join(' ')).toContain('Watch the site in a browser');
+
+    const watched = await runDiscoveryScan({ baseUrl: `${origin}/`, useBrowser: true, browserSettleMs: 4_000 });
+
+    expect(watched.diagnostics?.mode).toBe('browser');
+    expect(watched.geographicLayersDetected, 'watching the site finds it').toBe(true);
+
+    const parcels = watched.endpoints.find((endpoint) => endpoint.url.includes('/api/v2/data'));
+    expect(parcels?.nature).toBe('vector');
+    expect(parcels?.kind).toBe('geojson');
+    expect(parcels?.bodyVerified).toBe(true);
+    expect(parcels?.probe?.reachable).toBe(true);
+
+    // The bundle the page loads is never mistaken for an endpoint.
+    expect(watched.endpoints.some((endpoint) => endpoint.url.endsWith('app.bundle.js'))).toBe(false);
+  }, 120_000);
 });
