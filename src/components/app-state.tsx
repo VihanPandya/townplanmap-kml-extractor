@@ -39,8 +39,21 @@ export type ConnectionState =
       storage: { kind: string; durable: boolean };
       notes: string[];
       warnings: string[];
+      /** Concrete next steps from the scan, shown when a result is thin. */
+      advice: string[];
+      /** Whether this scan watched the site in a real browser. */
+      browserUsed: boolean;
     }
   | { status: 'failed'; error: string; detail?: string };
+
+/** Whether a browser is available on this machine for a deep scan. */
+export type BrowserAvailability = { available: boolean; defaultOn: boolean };
+
+export type ConnectOptions = {
+  useBrowser?: boolean;
+  /** URLs the user pasted in, typically from their own network panel. */
+  extraUrls?: string[];
+};
 
 type Selection = {
   cityId: string | null;
@@ -65,7 +78,8 @@ const EMPTY_SELECTION: Selection = {
 type AppState = {
   connection: ConnectionState;
   selection: Selection;
-  connect: () => Promise<void>;
+  browser: BrowserAvailability;
+  connect: (options?: ConnectOptions) => Promise<void>;
   refreshConnection: () => Promise<void>;
   selectCity: (city: LocationRecord | null) => void;
   selectArea: (area: LocationRecord | null) => void;
@@ -99,6 +113,7 @@ function loadSelection(): Selection {
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [connection, setConnection] = useState<ConnectionState>({ status: 'unknown' });
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
+  const [browser, setBrowser] = useState<BrowserAvailability>({ available: false, defaultOn: false });
   const [hydrated, setHydrated] = useState(false);
 
   // Restore after mount so the server and client render the same initial markup.
@@ -129,9 +144,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           endpoints: Array<{ nature: string }>;
           notes: string[];
           warnings: string[];
+          diagnostics?: { advice?: string[]; mode?: string };
         } | null;
+        browser?: BrowserAvailability;
         storage?: { kind: string; durable: boolean };
       };
+
+      if (data.browser) setBrowser(data.browser);
 
       if (data.connected && data.scan) {
         setConnection({
@@ -146,6 +165,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           storage: data.storage ?? { kind: 'unknown', durable: false },
           notes: data.scan.notes,
           warnings: data.scan.warnings,
+          advice: data.scan.diagnostics?.advice ?? [],
+          browserUsed: data.scan.diagnostics?.mode === 'browser',
         });
       }
     } catch {
@@ -157,10 +178,17 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     void refreshConnection();
   }, [refreshConnection]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (options: ConnectOptions = {}) => {
     setConnection({ status: 'connecting' });
     try {
-      const response = await fetch('/api/connect', { method: 'POST' });
+      const response = await fetch('/api/connect', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...(options.useBrowser === undefined ? {} : { useBrowser: options.useBrowser }),
+          ...(options.extraUrls?.length ? { extraUrls: options.extraUrls } : {}),
+        }),
+      });
       const data = (await response.json()) as Record<string, unknown>;
 
       if (!response.ok) {
@@ -184,6 +212,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         storage: (data.storage as { kind: string; durable: boolean }) ?? { kind: 'unknown', durable: false },
         notes: Array.isArray(data.notes) ? (data.notes as string[]) : [],
         warnings: Array.isArray(data.warnings) ? (data.warnings as string[]) : [],
+        advice: Array.isArray((data.diagnostics as { advice?: unknown })?.advice)
+          ? ((data.diagnostics as { advice: string[] }).advice)
+          : [],
+        browserUsed: (data.diagnostics as { mode?: string } | null)?.mode === 'browser',
       });
     } catch (error) {
       setConnection({
@@ -248,6 +280,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     () => ({
       connection,
       selection,
+      browser,
       connect,
       refreshConnection,
       selectCity,
@@ -260,6 +293,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     [
       connection,
       selection,
+      browser,
       connect,
       refreshConnection,
       selectCity,

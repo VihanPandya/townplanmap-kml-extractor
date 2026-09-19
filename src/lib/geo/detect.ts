@@ -222,7 +222,26 @@ export function classifyBody(
       evidence.push('MapLibre/Mapbox style document version 8.');
       return { kind: 'maplibre-style', nature: 'metadata', evidence };
     }
-    if (/"layers"\s*:\s*\[/.test(head) || /"currentVersion"/.test(head)) {
+    // An ArcGIS service description. *Which* service it describes is something
+    // the URL says and the body does not: a FeatureServer root lists its layers
+    // in exactly the shape a services directory lists its services, so reading
+    // the body alone would demote a vector service to a metadata document.
+    const arcGisUrl =
+      urlHint.kind === 'arcgis-feature-server' ||
+      urlHint.kind === 'arcgis-map-server' ||
+      urlHint.kind === 'arcgis-image-server' ||
+      urlHint.kind === 'arcgis-rest-root';
+    const arcGisShape =
+      /"currentVersion"\s*:/.test(head) ||
+      /"serviceDescription"\s*:/.test(head) ||
+      /"services"\s*:\s*\[/.test(head) ||
+      /"folders"\s*:\s*\[/.test(head);
+
+    if (arcGisUrl && arcGisShape && urlHint.kind !== 'arcgis-rest-root') {
+      evidence.push(`ArcGIS service description for the ${urlHint.kind} the URL names.`);
+      return { kind: urlHint.kind, nature: urlHint.nature, evidence };
+    }
+    if (arcGisShape) {
       evidence.push('ArcGIS service description.');
       return { kind: 'arcgis-rest-root', nature: 'metadata', evidence };
     }

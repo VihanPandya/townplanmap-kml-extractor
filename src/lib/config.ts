@@ -17,7 +17,7 @@ function intFromEnv(name: string, fallback: number, hardMax: number): number {
 
 export const LIMITS = {
   /** Requests a single discovery scan may issue against the source. */
-  maxRequestsPerScan: intFromEnv('TPM_MAX_REQUESTS_PER_SCAN', 60, 400),
+  maxRequestsPerScan: intFromEnv('TPM_MAX_REQUESTS_PER_SCAN', 150, 400),
   /** Bytes accepted from any one response before the transfer is aborted. */
   maxResponseBytes: intFromEnv('TPM_MAX_RESPONSE_BYTES', 24 * 1024 * 1024, 128 * 1024 * 1024),
   /** Per-request timeout in milliseconds. */
@@ -41,6 +41,23 @@ export const LIMITS = {
   /** Minimum milliseconds between two requests to the same host. */
   perHostThrottleMs: intFromEnv('TPM_PER_HOST_THROTTLE_MS', 120, 10_000),
 
+  // --- discovery breadth ---------------------------------------------------
+  /**
+   * JavaScript bundles read during a scan. A code-split application can ship
+   * its map configuration in a chunk well down the list, so this is generous
+   * rather than minimal; bundles are read as text and never executed.
+   */
+  maxScriptsRead: intFromEnv('TPM_MAX_SCRIPTS_READ', 16, 80),
+  /** Candidate URLs a scan will spend a probe request on. */
+  maxProbes: intFromEnv('TPM_MAX_PROBES', 40, 200),
+  /**
+   * Non-geographic JSON documents expanded for further candidates. A bootstrap
+   * or configuration endpoint usually names the real data services.
+   */
+  maxConfigDocuments: intFromEnv('TPM_MAX_CONFIG_DOCUMENTS', 10, 50),
+  /** Rejected candidate URLs retained for the diagnostics screen. */
+  maxDiagnosticEntries: intFromEnv('TPM_MAX_DIAGNOSTIC_ENTRIES', 300, 2_000),
+
   // --- preservation of original KML/KMZ files ------------------------------
   /** Original files preserved in a single sweep. */
   maxPreservedFiles: intFromEnv('TPM_MAX_PRESERVED_FILES', 250, 5_000),
@@ -53,6 +70,34 @@ export const LIMITS = {
 } as const;
 
 export type Limits = typeof LIMITS;
+
+/**
+ * Browser-assisted discovery.
+ *
+ * Reading a page's markup and scripts as text finds nothing when the
+ * application builds its data URLs at runtime, which is how most modern map
+ * front-ends work. Opening the page in a real browser and recording the
+ * requests *it* makes is the only reliable way to see those URLs.
+ *
+ * This is opt-in, uses a browser already installed on the machine, and does
+ * nothing to disguise itself: no stealth patches, no credentials, no cookies
+ * carried in, and the tool's own token is appended to the browser's user
+ * agent so the source can see exactly what visited it.
+ */
+export const BROWSER = {
+  /** Whether a scan uses the browser unless the caller says otherwise. */
+  enabledByDefault: process.env.TPM_BROWSER_SCAN === '1',
+  /** Explicit path to a Chrome, Chromium or Edge executable. */
+  executablePath: process.env.TPM_BROWSER_PATH ?? null,
+  /** Run with a visible window, which is useful when watching a scan. */
+  headless: process.env.TPM_BROWSER_HEADED !== '1',
+  /** How long to wait for the first load before giving up. */
+  navigationTimeoutMs: intFromEnv('TPM_BROWSER_TIMEOUT_MS', 45_000, 180_000),
+  /** How long to keep listening after load, for data fetched asynchronously. */
+  settleMs: intFromEnv('TPM_BROWSER_SETTLE_MS', 9_000, 120_000),
+  /** Requests recorded from one page visit. */
+  maxObservedRequests: intFromEnv('TPM_BROWSER_MAX_REQUESTS', 500, 5_000),
+} as const;
 
 /** The upstream this build is pointed at. Overridable for self-hosted mirrors. */
 export const SOURCE = {

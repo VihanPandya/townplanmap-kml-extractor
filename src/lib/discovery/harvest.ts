@@ -11,7 +11,7 @@
  */
 
 import { classifyUrl } from '@/lib/geo/detect';
-import type { DiscoveredEndpoint } from './types';
+import type { DiscoveredEndpoint, ObservedRequest, RejectedCandidate } from './types';
 
 /** Absolute http(s) URLs and root/relative paths inside quotes. */
 const ABSOLUTE_URL = /https?:\/\/[^\s"'`<>()\\]{4,400}/gi;
@@ -42,6 +42,37 @@ const INTEREST_PATTERNS: Array<{ pattern: RegExp; why: string }> = [
   { pattern: /\b(tp[_-]?scheme|townplan|town_plan|dp[_-]?zone|development[_-]?plan|zoning|landuse|land_use)\b/i, why: 'planning term' },
   { pattern: /\/api\/.*\b(map|geo|layer|feature|spatial|gis)\b/i, why: 'geospatial-looking API path' },
   { pattern: /\b(arcgis|esri|mapbox|maptiler|openlayers|leaflet|maplibre)\b/i, why: 'mapping platform reference' },
+  // --- further service software and gateways -------------------------------
+  { pattern: /\b(mapproxy|geowebcache|gwc|tilecache|tileserver|martin|pg_?tileserv|pg_?featureserv)\b/i, why: 'tile or feature server software' },
+  { pattern: /\/(gs|geoserver|geonode|mapstore|mapfish)\//i, why: 'geospatial server path' },
+  { pattern: /\/(proxy|gisproxy|mapproxy)\b/i, why: 'map proxy path, which usually fronts a real service' },
+  { pattern: /\/(geojson|wfs3|ogcapi|features)\//i, why: 'feature service path' },
+  // --- Indian land-record and municipal vocabulary -------------------------
+  { pattern: /\b(bhunaksha|bhulekh|anyror|jamabandi|mahabhulekh|e[-_]?dhara|revenue)\b/i, why: 'land-record system reference' },
+  { pattern: /\b(nagar|palika|mahanagar|municipal|corporation|panchayat|taluk[ao]|tehsil|mandal|ward)\b/i, why: 'local-government term' },
+  { pattern: /\b(final[-_]?plot|original[-_]?plot|fp[-_]?no|op[-_]?no|survey[-_]?no|block[-_]?no|gam[-_]?tal)\b/i, why: 'plot or survey-number term' },
+  // --- generic data paths that a map front-end uses ------------------------
+  { pattern: /\/(layers?|features?|boundar(y|ies)|geometr(y|ies)|shapes?|polygons?)(\/|\?|$)/i, why: 'data path naming geometry' },
+  { pattern: /\/(gis|geo|spatial|maps?)(\/|\?|$)/i, why: 'geospatial path segment' },
+  { pattern: /[?&](bbox|cql_filter|outfields|geometrytype|spatialrel|typenames?|layers?)=/i, why: 'spatial query parameter' },
+];
+
+/**
+ * Documents that are not data themselves but usually name where the data is.
+ *
+ * A single-page application keeps its service URLs in a configuration payload,
+ * so reading one of these turns an opaque bundle into a concrete endpoint list.
+ */
+const CONFIG_PATTERNS: Array<{ pattern: RegExp; why: string }> = [
+  {
+    pattern: /\/(config|configuration|settings|bootstrap|init|runtime[-_.]?config|app[-_.]?config|env)[^/]*\.json(\?|$)/i,
+    why: 'configuration document, which normally names the data services',
+  },
+  {
+    pattern: /\/api\/(v\d+\/)?(config|configuration|settings|bootstrap|init|app|meta(data)?|catalog|manifest)\b/i,
+    why: 'configuration or catalog API, which normally names the data services',
+  },
+  { pattern: /\/(webmap|web_map|mapconfig|map[-_.]?config|project\.json|capabilities)\b/i, why: 'map configuration document' },
 ];
 
 /** Things that are never worth a request. */
@@ -80,15 +111,23 @@ function normalise(raw: string, baseUrl: string): string | null {
   }
 }
 
-function interestOf(url: string): string[] {
+export function interestOf(url: string): string[] {
   const reasons: string[] = [];
   for (const { pattern, why } of INTEREST_PATTERNS) {
+    if (pattern.test(url)) reasons.push(why);
+  }
+  for (const { pattern, why } of CONFIG_PATTERNS) {
     if (pattern.test(url)) reasons.push(why);
   }
   return reasons;
 }
 
-function excluded(url: string): boolean {
+/** True when a URL looks like a configuration document worth expanding. */
+export function looksLikeConfigDocument(url: string): boolean {
+  return CONFIG_PATTERNS.some(({ pattern }) => pattern.test(url));
+}
+
+export function excluded(url: string): boolean {
   return EXCLUSION_PATTERNS.some((pattern) => pattern.test(url));
 }
 
@@ -115,17 +154,46 @@ export function extractInlineScripts(html: string): string[] {
   return out;
 }
 
+export type HarvestOptions = {
+  /**
+   * Accept every URL that is not explicitly excluded, rather than only those
+   * matching a known geospatial pattern. Used for URLs a browser watched the
+   * site actually request, where the site's own behaviour is better evidence
+   * than any pattern this tool could write.
+   */
+  acceptAll?: boolean;
+  /** Called for each URL that was seen and not kept, with the reason. */
+  onReject?: (rejection: RejectedCandidate) => void;
+};
+
 /**
  * Harvest candidate data URLs from one document's text.
  */
-export function harvestCandidates(source: HarvestSource): Candidate[] {
+export function harvestCandidates(source: HarvestSource, options: HarvestOptions = {}): Candidate[] {
   const found = new Map<string, Candidate>();
+  const reported = new Set<string>();
+
+  const reject = (url: string, reason: string) => {
+    if (!options.onReject || reported.has(url)) return;
+    reported.add(url);
+    options.onReject({ url, reason });
+  };
 
   const consider = (raw: string, how: string) => {
     const url = normalise(raw, source.url);
-    if (!url || excluded(url)) return;
+    if (!url) {
+      reject(raw.slice(0, 300), 'Not a usable http(s) URL.');
+      return;
+    }
+    if (excluded(url)) {
+      reject(url, 'Matched an exclusion rule: a static asset, tracker or account path.');
+      return;
+    }
     const reasons = interestOf(url);
-    if (reasons.length === 0) return;
+    if (reasons.length === 0 && !options.acceptAll) {
+      reject(url, 'Did not match any known geospatial service pattern.');
+      return;
+    }
     const existing = found.get(url);
     if (existing) {
       for (const reason of reasons) {
@@ -136,7 +204,12 @@ export function harvestCandidates(source: HarvestSource): Candidate[] {
     found.set(url, {
       url,
       discoveredIn: source.label,
-      evidence: [`Found in ${source.label} (${how}).`, ...reasons],
+      evidence: [
+        `Found in ${source.label} (${how}).`,
+        ...(reasons.length > 0
+          ? reasons
+          : ['Kept because the site itself requested it, not because its URL matched a pattern.']),
+      ],
     });
   };
 
@@ -148,6 +221,64 @@ export function harvestCandidates(source: HarvestSource): Candidate[] {
   }
   for (const match of source.text.matchAll(SRC_HREF)) {
     if (match[1]) consider(match[1], 'markup attribute');
+  }
+
+  return [...found.values()];
+}
+
+/**
+ * Turn requests a browser watched the site make into candidates.
+ *
+ * These carry more weight than anything harvested from text: the site asked
+ * for them itself, so they are real endpoints by construction. The declared
+ * content type is recorded as evidence, but it is not trusted as the answer —
+ * the probe still reads the body before anything is called vector data.
+ */
+export function candidatesFromObservations(
+  observations: ObservedRequest[],
+  options: { onReject?: (rejection: RejectedCandidate) => void } = {},
+): Candidate[] {
+  const found = new Map<string, Candidate>();
+
+  for (const observation of observations) {
+    if (observation.blockedReason) {
+      options.onReject?.({
+        url: observation.url,
+        reason: `Stopped by this tool’s safety rules: ${observation.blockedReason}`,
+      });
+      continue;
+    }
+    if (observation.failureReason) {
+      options.onReject?.({
+        url: observation.url,
+        reason: `The request failed on the network: ${observation.failureReason}`,
+      });
+      continue;
+    }
+    if (excluded(observation.url)) {
+      options.onReject?.({ url: observation.url, reason: 'Matched an exclusion rule: a static asset or tracker.' });
+      continue;
+    }
+    if (found.has(observation.url)) continue;
+
+    const evidence = [
+      `The site itself requested this ${observation.resourceType} as ${observation.method} while the page was open.`,
+    ];
+    if (observation.status !== null) evidence.push(`It answered HTTP ${observation.status}.`);
+    if (observation.contentType) evidence.push(`It declared content type ${observation.contentType}.`);
+    if (observation.method !== 'GET') {
+      evidence.push(
+        `Observed as ${observation.method}. This tool only issues GET requests, so the endpoint may not answer ` +
+          'the same way when probed.',
+      );
+    }
+    evidence.push(...interestOf(observation.url));
+
+    found.set(observation.url, {
+      url: observation.url,
+      discoveredIn: 'the requests the site made in a browser',
+      evidence,
+    });
   }
 
   return [...found.values()];

@@ -11,6 +11,7 @@ const LINKS = [
   { href: '/features', label: 'Features' },
   { href: '/export', label: 'KML Export' },
   { href: '/source-files', label: 'Source Files' },
+  { href: '/diagnostics', label: 'Diagnostics' },
   { href: '/history', label: 'Export History' },
   { href: '/settings', label: 'Settings' },
 ];

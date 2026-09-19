@@ -140,6 +140,79 @@ export type FeatureRecord = {
   validation?: GeometryValidation;
 };
 
+/**
+ * One request the site's own front-end made while it was open in a browser.
+ *
+ * This is the record that makes a client-side application legible: the URLs an
+ * SPA assembles at runtime never appear literally in its source, but every one
+ * of them shows up here.
+ */
+export type ObservedRequest = {
+  url: string;
+  method: string;
+  /** Chromium's own classification: `xhr`, `fetch`, `document`, `image`… */
+  resourceType: string;
+  status: number | null;
+  contentType: string | null;
+  bytes: number | null;
+  /** Set when this tool's own safety rules stopped the request. */
+  blockedReason?: string;
+  /** Set when the network, not this tool, ended the request. */
+  failureReason?: string;
+};
+
+/** Why a harvested URL was not pursued. */
+export type RejectedCandidate = {
+  url: string;
+  reason: string;
+};
+
+/** One document the scan actually fetched, and how that went. */
+export type ScanDocument = {
+  url: string;
+  role: 'landing' | 'script' | 'style' | 'service-directory' | 'config' | 'probe';
+  status: number | null;
+  bytes: number | null;
+  ok: boolean;
+  reason?: string;
+};
+
+export type BrowserDiagnostics = {
+  /** Whether this scan asked for a browser at all. */
+  attempted: boolean;
+  /** Whether a browser was actually driven. */
+  used: boolean;
+  executablePath: string | null;
+  requestsObserved: number;
+  requestsBlocked: number;
+  /** Populated when the browser could not be used, with what to do about it. */
+  reason?: string;
+  hint?: string;
+  observed: ObservedRequest[];
+};
+
+/**
+ * Everything the scan saw, so an empty result is evidence rather than a shrug.
+ *
+ * When discovery finds nothing, this is what tells the difference between "the
+ * site was unreachable", "the site was read but its data URLs are built at
+ * runtime" and "candidates were found but every one of them was refused".
+ */
+export type ScanDiagnostics = {
+  mode: 'text' | 'browser';
+  documents: ScanDocument[];
+  scriptsSeen: number;
+  scriptsRead: number;
+  candidatesHarvested: number;
+  candidatesProbed: number;
+  rejected: RejectedCandidate[];
+  /** URLs the caller supplied by hand. */
+  seeds: string[];
+  browser: BrowserDiagnostics | null;
+  /** Concrete next steps, written for the person looking at an empty result. */
+  advice: string[];
+};
+
 /** Result of a full connect + discovery scan. */
 export type ScanResult = {
   id: string;
@@ -157,4 +230,9 @@ export type ScanResult = {
   warnings: string[];
   /** Populated when the scan could not reach the source at all. */
   failure: { kind: string; reason: string } | null;
+  /**
+   * Optional on older stored scans, which were written before diagnostics
+   * existed; always present on a scan run by this build.
+   */
+  diagnostics?: ScanDiagnostics;
 };

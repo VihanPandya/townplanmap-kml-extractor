@@ -44,8 +44,12 @@ Before the detail, here is the whole journey for a single land parcel.
 ```mermaid
 flowchart TD
     A["User clicks Connect"] --> B["Read landing page + JS as text"]
+    A --> B2["Optional: watch the site load in a browser"]
     B --> C["Harvest candidate URLs"]
-    C --> D["Probe each candidate"]
+    B2 --> C
+    C --> C2{"Any candidates?"}
+    C2 -->|none| W["Report what was read and rejected, with next steps"]
+    C2 -->|some| D["Probe each candidate"]
     D --> E{"Vector or raster?"}
     E -->|raster| X["Report: imagery only, no KML"]
     E -->|vector| F["Pick a provider for the endpoint"]
@@ -65,8 +69,10 @@ flowchart TD
     P -->|yes| R["Preview on map → Download"]
 ```
 
-Three of those branches end in *nothing being produced*. That is deliberate, and it is most of what
-distinguishes this tool from one that traces pictures.
+Four of those branches end in *nothing being produced*. That is deliberate, and it is most of what
+distinguishes this tool from one that traces pictures. The one on the left is the one worth dwelling on: when
+discovery comes up empty, the tool reports what it read and what it rejected rather than filling the gap with
+a guess.
 
 ---
 
@@ -80,26 +86,71 @@ A modern map page keeps its data endpoints in three places, and the scan reads a
 
 1. **The landing page markup** — `src`, `href`, `data-*` attributes.
 2. **Inline `<script>` bodies** — where the bootstrap configuration usually lives.
-3. **Bundled JavaScript** — up to `MAX_SCRIPTS` (6) external bundles.
+3. **Bundled JavaScript** — up to `LIMITS.maxScriptsRead` (16) external bundles.
 
-> **Fetched JavaScript is read as text and never executed.** The tool is a parser, not a browser. This is a
-> security property first (arbitrary third-party code never runs server-side) and a predictability property
-> second.
+> **Fetched JavaScript is read as text and never executed by the server.** For these three passes the tool is a
+> parser, not a browser. This is a security property first (arbitrary third-party code never runs server-side)
+> and a predictability property second.
 
 The harvester (`harvest.ts`) deliberately **over-collects**: it matches any URL containing a geospatial
 signal — `/rest/services/`, `service=WFS`, `.geojson`, `{z}/{x}/{y}`, cadastral words like `parcel` / `survey`
 / `khasra`, planning words like `tp_scheme` / `landuse`, and so on — then excludes the obvious noise
-(analytics, fonts, stylesheets, login paths).
+(analytics, fonts, stylesheets, login paths). Every URL it drops is recorded **with the reason**, which is what
+makes an empty result diagnosable later.
 
 Candidates are then **ranked** before probing, because the request budget is finite: a FeatureServer is worth a
 request before a TileJSON is, which is worth one before an unclassified JSON document.
 
-Up to `MAX_PROBES` (24) candidates get one request each. Anything beyond that stays listed but is honestly
-marked as unprobed rather than quietly dropped.
+Up to `LIMITS.maxProbes` (40) candidates get one request each. Anything beyond that stays listed but is
+honestly marked as unprobed rather than quietly dropped.
 
-Finally the engine follows **one level** of indirection — a map style document names the sources a map draws
-from; an ArcGIS services directory names the services under it. One level, deliberately: this is a targeted
-expansion, not a crawl.
+The engine then follows the **signposts**: a map style document or TileJSON names the sources a map draws from;
+an ArcGIS services directory names the services under it, and its folders too, since a tidy ArcGIS deployment
+lists nothing at its root; an application configuration payload names all of the above. Anything newly named
+gets a probe of its own. This is a targeted expansion, not a crawl.
+
+#### When reading the source is not enough
+
+All of the above finds URLs **written into** the page. Most modern map front-ends do not write them there. They
+hold a base path, a layer id and a template, and assemble the request at the moment they make it:
+
+```js
+var url = origin + '/' + ['ap','i','/','v','1','/','par','cels'].join('') + '?layer=' + id;
+```
+
+No amount of reading that file will produce `/api/v1/parcels`. This is the single most common reason a scan of
+a perfectly good map site returns `ENDPOINTS 1 · VECTOR 0`.
+
+So there is a fourth pass, opt-in per scan: **watch the site in a browser** (`src/lib/discovery/browser.ts`).
+It opens the source in a Chrome, Chromium or Edge installation already on the machine, lets the site's own code
+run, and writes down every request it makes. If the map is drawing real geometry, the URL that serves it is in
+that list by construction — the site asked for it.
+
+What the browser produces is a **list of URLs and nothing more**. Each one then goes through the same probe,
+the same classification and the same SSRF-guarded fetcher as a URL found any other way. The browser observes;
+it never extracts.
+
+It is also deliberately unsubtle about being there:
+
+- the browser's own user agent is sent **with this tool's identity appended** — nothing disguised, no
+  fingerprint spoofed, no stealth patch, and `Headless` not scrubbed out;
+- **no credentials, cookies, storage state or session** are carried in;
+- **no login, consent wall or captcha is clicked through**;
+- every request it makes is checked against **the same address rules** as the server-side fetcher, so one aimed
+  at a private, loopback or link-local address is aborted before it leaves the machine;
+- it is **one visit** with one settle period, then it closes.
+
+Because it runs the source's code, it is off unless asked for. `TPM_BROWSER_SCAN=1` turns it on by default.
+
+#### What the scan writes down about itself
+
+Every scan carries a `diagnostics` record: each document fetched and what it answered, each script read, each
+candidate harvested and each one rejected with the reason, each request the browser observed, and a short list
+of **concrete next steps** derived from all of it. The Diagnostics screen renders it, and `GET /api/diagnostics`
+returns it whole.
+
+This exists because "found nothing" is not an answer. "Read the landing page and 11 bundles, harvested 40 URLs,
+rejected these 39 for this reason, probed one, and it returned an HTML login page" is.
 
 ---
 
@@ -534,6 +585,12 @@ The tool's failure behaviour is a feature, so here it is in one place:
 | A preserved file will not parse | The bytes are kept anyway; only the summary is unavailable, and it says so |
 | A `.kml` URL serves a login page | Recognised by its bytes, recorded as a failure, not preserved |
 | A NetworkLink chain runs deep | Followed to the configured depth, then what was left unfollowed is named |
+| Nothing at all is discovered | Diagnostics names every document read and every URL rejected, and the connection screen lists the next steps |
+| The site builds its data URLs at runtime | The plain scan finds nothing and says to watch the site in a browser; the browser pass then records the real URLs |
+| No browser is installed for the deep scan | Reported with the reason and how to fix it; the plain scan still runs |
+| The browser cannot reach the site | Recorded as a network failure, distinct from a refusal by this tool's own rules |
+| A URL is pasted in by hand | Probed directly, classified from the body it returns, and shown as supplied by hand rather than discovered |
+| A pasted URL points at a private address | Refused by the SSRF rules before the scan sees it, and the reason is returned |
 
 ---
 
@@ -543,6 +600,7 @@ The tool's failure behaviour is a feature, so here it is in one place:
 |---|---|
 | Every limit in one place | `src/lib/config.ts` |
 | The only outbound HTTP path | `src/lib/net/safe-fetch.ts` |
+| Watching the site in a browser | `src/lib/discovery/browser.ts` |
 | SSRF rules | `src/lib/net/ssrf.ts` |
 | How endpoints are found | `src/lib/discovery/engine.ts`, `harvest.ts` |
 | Vector vs raster | `src/lib/geo/detect.ts` |

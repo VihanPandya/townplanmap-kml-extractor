@@ -179,7 +179,66 @@ export default function DashboardPage() {
 }
 
 function ConnectionPanel() {
-  const { connection, connect } = useAppState();
+  const { connection, connect, browser } = useAppState();
+
+  // A deep scan is the answer when a plain read finds nothing, so it is on by
+  // default whenever this machine has a browser to do it with. Derived rather
+  // than stored, so it follows availability until the user decides otherwise.
+  const [deepScanChoice, setDeepScanChoice] = useState<boolean | null>(null);
+  const deepScan = deepScanChoice ?? browser.available;
+  const [manualUrls, setManualUrls] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const run = () =>
+    void connect({
+      useBrowser: deepScan && browser.available,
+      extraUrls: manualUrls
+        .split(/[\s,]+/)
+        .map((entry) => entry.trim())
+        .filter((entry) => /^https?:\/\//i.test(entry)),
+    });
+
+  const advanced = (
+    <div className="space-y-3 border-t border-[var(--color-border)] pt-3">
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={deepScan && browser.available}
+          disabled={!browser.available}
+          onChange={(event) => setDeepScanChoice(event.target.checked)}
+        />
+        <span>
+          <span className="text-[var(--color-ink)]">Watch the site in a browser</span>
+          <span className="block text-xs text-[var(--color-ink-subtle)]">
+            {browser.available
+              ? 'Opens the page in a browser on this machine and records the requests the site makes for itself. ' +
+                'Most map applications build their data URLs while they run, so this is usually the only way to see ' +
+                'them. Slower, and it runs the site’s own code.'
+              : 'Unavailable: no Chrome, Chromium or Edge installation was found, or the optional ' +
+                'playwright-core package is not installed. Run npm install playwright-core, or set TPM_BROWSER_PATH.'}
+          </span>
+        </span>
+      </label>
+
+      <div>
+        <label htmlFor="manual-urls" className="label mb-1.5 block">
+          Add an endpoint
+        </label>
+        <textarea
+          id="manual-urls"
+          className="field min-h-[72px] font-mono text-xs"
+          placeholder="https://example.gov.in/arcgis/rest/services/TP/FeatureServer/0"
+          value={manualUrls}
+          onChange={(event) => setManualUrls(event.target.value)}
+        />
+        <p className="mt-1.5 text-xs text-[var(--color-ink-subtle)]">
+          Know the data URL already? Paste it here, one per line, and the scan will probe it directly. Open the source
+          in your browser, press F12, choose Network, tick Fetch/XHR, reload, and copy any row that returns map data.
+        </p>
+      </div>
+    </div>
+  );
 
   return (
     <Panel title="Connection">
@@ -207,6 +266,24 @@ function ConnectionPanel() {
             <Stat label="Raster" value={connection.rasterEndpointCount} tone="warn" />
           </dl>
 
+          {/* When the scan found nothing usable, what to do about it matters
+              more than anything else on the screen, so it goes first. */}
+          {connection.advice.length > 0 && !connection.geographicLayersDetected && (
+            <Notice tone="warn" title="No vector geometry was found. Next steps:">
+              <ol className="list-decimal space-y-1.5 pl-4">
+                {connection.advice.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ol>
+              <p className="mt-2">
+                <Link href="/diagnostics" className="underline">
+                  Open Scan Diagnostics
+                </Link>{' '}
+                to see every document the scan read and every URL it rejected.
+              </p>
+            </Notice>
+          )}
+
           {connection.warnings.map((warning) => (
             <Notice key={warning} tone="warn">
               {warning}
@@ -225,16 +302,36 @@ function ConnectionPanel() {
             </Notice>
           )}
 
-          <button type="button" className="btn btn-secondary w-full" onClick={() => void connect()}>
-            Re-scan the source
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="btn btn-secondary flex-1" onClick={run}>
+              {deepScan && browser.available ? 'Re-scan, watching in a browser' : 'Re-scan the source'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              aria-expanded={showAdvanced}
+              onClick={() => setShowAdvanced((current) => !current)}
+            >
+              {showAdvanced ? 'Hide options' : 'Scan options'}
+            </button>
+          </div>
+          {showAdvanced && advanced}
         </div>
       ) : connection.status === 'connecting' ? (
         <div className="space-y-3 py-2">
-          <Spinner label="Reading the landing page, its scripts and its data endpoints…" />
+          <Spinner
+            label={
+              deepScan && browser.available
+                ? 'Opening the site in a browser and recording what it loads\u2026'
+                : 'Reading the landing page, its scripts and its data endpoints\u2026'
+            }
+          />
           <p className="text-xs text-[var(--color-ink-subtle)]">
-            The scan reads the page and its JavaScript as text, harvests candidate data endpoints, then probes the most
-            promising ones to see whether they serve real geometry or only imagery.
+            {deepScan && browser.available
+              ? 'The page is loaded in a browser on this machine so the requests it makes for itself can be written ' +
+                'down. Those URLs are then fetched through the usual guarded path. This takes up to a minute.'
+              : 'The scan reads the page and its JavaScript as text, harvests candidate data endpoints, then probes ' +
+                'the most promising ones to see whether they serve real geometry or only imagery.'}
           </p>
         </div>
       ) : connection.status === 'failed' ? (
@@ -246,9 +343,10 @@ function ConnectionPanel() {
             This tool does not attempt to bypass access controls, authentication, paywalls or anti-bot systems. If the
             source is refusing requests, that refusal is reported as-is.
           </p>
-          <button type="button" className="btn btn-primary w-full" onClick={() => void connect()}>
+          <button type="button" className="btn btn-primary w-full" onClick={run}>
             Try again
           </button>
+          {advanced}
         </div>
       ) : (
         <div className="space-y-3">
@@ -256,9 +354,10 @@ function ConnectionPanel() {
             Connect to inspect the publicly accessible map data behind TownPlanMap and find out which layers expose real
             geographic geometry.
           </p>
-          <button type="button" className="btn btn-primary w-full" onClick={() => void connect()}>
+          <button type="button" className="btn btn-primary w-full" onClick={run}>
             Connect to TownPlanMap
           </button>
+          {advanced}
         </div>
       )}
     </Panel>

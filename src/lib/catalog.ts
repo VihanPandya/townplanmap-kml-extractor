@@ -81,15 +81,35 @@ export type ConnectResult = {
   storeDurable: boolean;
 };
 
+export type ConnectOptions = {
+  signal?: AbortSignal;
+  /**
+   * URLs the person running the tool already knows about — typically read out
+   * of their own browser's network panel. They skip pattern matching entirely
+   * and go straight to the probe.
+   */
+  seeds?: string[];
+  /** Watch the site load in a locally installed browser. */
+  useBrowser?: boolean;
+  browserSettleMs?: number;
+};
+
 /**
  * Connect to the source: run a discovery scan, persist it, and derive the city
  * list from everything the scan turned up.
  */
-export async function connect(signal?: AbortSignal): Promise<ConnectResult> {
+export async function connect(options: ConnectOptions = {}): Promise<ConnectResult> {
+  const { signal } = options;
   const store = await getStore();
   const budget = new RequestBudget();
 
-  const scan = await runDiscoveryScan({ budget, signal });
+  const scan = await runDiscoveryScan({
+    budget,
+    signal,
+    ...(options.seeds ? { seeds: options.seeds } : {}),
+    ...(options.useBrowser === undefined ? {} : { useBrowser: options.useBrowser }),
+    ...(options.browserSettleMs === undefined ? {} : { browserSettleMs: options.browserSettleMs }),
+  });
 
   // The fixture source is opt-in. It is always announced, and when it is the
   // only thing available that is said loudly rather than letting an offline
@@ -115,14 +135,22 @@ export async function connect(signal?: AbortSignal): Promise<ConnectResult> {
     }
   }
 
-  await store.saveScan(scan);
-  await store.saveEndpoints(scan.id, scan.endpoints);
-
   let cities: LocationRecord[] = [];
   if (scan.connected) {
     cities = await discoverCities(scan, budget, signal);
     await store.saveLocations(cities);
+
+    if (cities.length === 0) {
+      scan.notes.push(
+        'No city list could be read from the source. Layers can still be enumerated and exported without one; ' +
+          'the city selector is a convenience, not a prerequisite.',
+      );
+    }
   }
+
+  // Saved last, so the stored scan carries every note the connect step added.
+  await store.saveScan(scan);
+  await store.saveEndpoints(scan.id, scan.endpoints);
 
   return {
     scan,

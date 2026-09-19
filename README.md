@@ -55,6 +55,10 @@ npm install
 npm run dev            # http://localhost:3000
 ```
 
+`npm install` also pulls in `playwright-core`, an optional dependency used by the deep scan described below. It
+drives a browser **you already have** — Chrome, Chromium or Edge — and downloads nothing. If it is missing, or
+no browser is installed, the app still runs; only the deep scan is unavailable, and it says so.
+
 For production:
 
 ```bash
@@ -63,6 +67,55 @@ npm run start
 ```
 
 No configuration is required to start. See [`.env.example`](.env.example) for everything that can be tuned.
+
+### When a scan finds nothing
+
+This is the common case against a real map site, and it has a cause worth understanding.
+
+A plain scan reads the landing page and its JavaScript bundles **as text** and pulls out anything that looks
+like a data URL. That works when the URLs are written into the source. Most modern map front-ends do not write
+them there: they hold a base path, a layer id and a template, and assemble the request at the moment they make
+it. Nothing a server-side read can see ever contains the URL.
+
+So when the dashboard says `ENDPOINTS 1 · VECTOR 0`, work through this in order.
+
+**1. Turn on the deep scan.** On the dashboard, open **Scan options** and tick **Watch the site in a browser**,
+then scan again. This opens the source in a browser on your machine, lets the site's own code run, and writes
+down every request it makes. If the map draws real geometry, the URL that serves it will be in that list. Those
+URLs then go through exactly the same guarded fetch path as everything else.
+
+```bash
+TPM_BROWSER_SCAN=1 npm run dev          # on for every scan
+TPM_BROWSER_PATH="C:\Program Files\Google\Chrome\Application\chrome.exe" npm run dev
+TPM_BROWSER_HEADED=1 npm run dev        # watch it happen
+TPM_BROWSER_SETTLE_MS=20000 npm run dev # a slow site needs longer
+```
+
+**2. Read the Diagnostics screen.** It lists every document the scan fetched and what each one answered, every
+request the browser watched the site make, and every URL that was seen and dropped *with the reason*. An empty
+result stops being a dead end there. **Copy as JSON** puts the whole record on the clipboard.
+
+**3. Find the URL yourself and paste it in.** This always works:
+
+1. Open the source in your browser and press <kbd>F12</kbd>.
+2. Choose the **Network** tab and tick **Fetch/XHR**.
+3. Reload the page, then pan and click around the map.
+4. Look for a response that is GeoJSON, an ArcGIS `query`, or a WFS document. Right-click → **Copy link
+   address**.
+5. Paste it into **Add an endpoint** on the dashboard and scan again.
+
+A hand-supplied URL skips pattern matching entirely and goes straight to the probe, which classifies it from
+the body it actually returns. The same URLs can be posted directly:
+
+```bash
+curl -X POST localhost:3000/api/connect \
+  -H 'content-type: application/json' \
+  -d '{"useBrowser":true,"extraUrls":["https://example.gov.in/arcgis/rest/services/TP/FeatureServer/0"]}'
+```
+
+**4. If the source refuses.** A `401` or `403` is reported exactly as it arrived. The deep scan does not change
+that: it carries no credentials and no stored session, and it does not click through a login, a consent wall or
+a captcha. If a dataset needs authorised access through TownPlanMap, that is where to get it.
 
 ### With PostGIS (recommended)
 
@@ -102,6 +155,7 @@ src/
 │   ├── features/               Map, feature explorer, inspector, attribute table
 │   ├── export/                 Export Centre, validation report, KML viewer
 │   ├── source-files/           Preserved original KML/KMZ
+│   ├── diagnostics/            What the last scan fetched, observed and rejected
 │   ├── history/                Export history
 │   └── settings/               Limits and access policy
 ├── components/                 App state, map, shared UI
@@ -114,7 +168,8 @@ src/
     ├── xml/safe-parse.ts       XML parsing with DTD and entity declarations refused
     ├── discovery/
     │   ├── engine.ts           The discovery scan
-    │   ├── harvest.ts          Candidate URL extraction from HTML and JS
+    │   ├── browser.ts          The deep scan: watching the site in a real browser
+    │   ├── harvest.ts          Candidate URL extraction from HTML, JS and observations
     │   ├── probe.ts            Endpoint probing and classification
     │   ├── locations.ts        City/village discovery from the source
     │   └── providers/          ArcGIS, WFS, GML, GeoJSON/TopoJSON/KML, vector tiles
@@ -266,6 +321,22 @@ shape of an SSRF. The controls are:
 - **Output escaping.** Source attributes are XML-escaped and control characters XML forbids are stripped;
   filenames are sanitised for every platform, including Windows reserved device names.
 
+### The browser pass
+
+The deep scan is the one place the source's own code runs, so it is worth being precise about what it does.
+
+- It is **opt-in per scan** and uses a browser already on the machine. Nothing is downloaded.
+- Every request the browser makes is checked against **the same address rules** as the server-side fetcher, per
+  host and cached per host. One aimed at a private, loopback or link-local address is aborted before it leaves
+  the machine, and appears in Diagnostics as refused.
+- It sends the **browser's own user agent with this tool's identity appended**. Nothing is disguised, no
+  fingerprint is spoofed, no stealth patch is applied, and `Headless` is not scrubbed out. A source that wants
+  to refuse this tool can see it and refuse it.
+- It carries **no credentials, cookies, storage state or session**, and it does not click through a login, a
+  consent wall or a captcha.
+- It is **one visit** with one settle period, then it closes. There is no retry loop.
+- It **observes**; it never extracts. URLs it records are fetched afterwards through the guarded path above.
+
 Limits are configured through environment variables and clamped to hard ceilings in code, so they cannot be
 raised from the browser. They are all listed on the Settings screen.
 
@@ -275,8 +346,9 @@ raised from the browser. They are all listed on the Settings screen.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/connect` | Run a discovery scan |
+| `POST` | `/api/connect` | Run a discovery scan. Optional body: `{ useBrowser, browserSettleMs, extraUrls[] }` |
 | `GET` | `/api/connect` | Last scan, without spending requests |
+| `GET` | `/api/diagnostics` | What the last scan fetched, observed and rejected |
 | `GET` | `/api/cities` | Discovered cities |
 | `GET` | `/api/cities/:id/areas` | Villages/localities in a city |
 | `GET` | `/api/areas/:id/layers` | Layers for an area (`:id` may be `all`) |
@@ -330,7 +402,7 @@ TownPlanMap_Export.zip
 ## Testing
 
 ```bash
-npm test          # 272 unit tests
+npm test          # 286 unit tests
 npm run typecheck
 npm run lint
 npm run build
@@ -345,9 +417,12 @@ KML round-tripping, XML hardening and filename/path sanitisation.
 
 ## Limitations
 
-- **Discovery is best-effort.** It reads the page and its scripts server-side. A map that loads its endpoints
-  only after a user interaction, or from an endpoint shape this build does not recognise, will not be found —
-  and the tool says so rather than inventing a result.
+- **Discovery is best-effort.** A plain scan reads the page and its scripts server-side, so it cannot see a URL
+  the application assembles at runtime; the deep scan exists for exactly that and is the first thing to reach
+  for when a scan comes back empty. Even then, a map that loads its data only after a specific user interaction
+  — a search, a form submission, a click on one parcel — may not be caught, because the deep scan loads the
+  page and watches; it does not drive the interface. Paste the URL in by hand when that happens. Whatever is
+  missed is reported as missed, with the evidence, rather than papered over.
 - **GeoPackage and shapefile archives are detected but not yet read.**
 - **Vector tiles are a fallback, not an equal.** See the provenance table.
 - **A raster-only source yields no KML.** By design.
