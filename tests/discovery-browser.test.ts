@@ -223,3 +223,129 @@ describe.skipIf(!browserAvailable)('the whole scan, end to end', () => {
     expect(watched.endpoints.some((endpoint) => endpoint.url.endsWith('app.bundle.js'))).toBe(false);
   }, 120_000);
 });
+
+/**
+ * A source that returns its geometry only to a session that is signed in.
+ *
+ * This is the shape that matters most: the data is there, the person is
+ * entitled to it, and a bare server-side request has no standing to ask for
+ * it. The window signs itself in, the site fetches its data, and the bytes are
+ * kept — with no credential kept alongside them.
+ */
+describe.skipIf(!browserAvailable)('a source that only answers a signed-in session', () => {
+  const SESSION = 'tpm_session=abc123';
+
+  const PLOTS = {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        properties: { final_plot_no: '12', village: 'Vastral' },
+        geometry: { type: 'Polygon', coordinates: [[[72.63, 23.01], [72.64, 23.01], [72.64, 23.02], [72.63, 23.01]]] },
+      },
+    ],
+  };
+
+  const APP = `
+    fetch('/api/plots', { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (c) { document.title = c ? 'plots: ' + c.features.length : 'denied'; });
+  `;
+
+  let secured: Server;
+  let securedOrigin: string;
+  const unauthenticatedAttempts: string[] = [];
+
+  beforeAll(async () => {
+    secured = createServer((request, response) => {
+      const path = (request.url ?? '/').split('?')[0];
+      const cookie = request.headers.cookie ?? '';
+
+      if (path === '/') {
+        // The landing page signs the visitor in, standing in for the person
+        // typing their own credentials into the source's own form.
+        response.writeHead(200, { 'content-type': 'text/html', 'set-cookie': `${SESSION}; Path=/` });
+        response.end('<!doctype html><html><head><title>Secured map</title></head><body><script>' + APP + '</script></body></html>');
+        return;
+      }
+      if (path === '/api/plots') {
+        if (!cookie.includes('tpm_session=')) {
+          unauthenticatedAttempts.push(path);
+          response.writeHead(401, { 'content-type': 'application/json' });
+          response.end('{"error":"sign in required"}');
+          return;
+        }
+        response.writeHead(200, { 'content-type': 'application/geo+json' });
+        response.end(JSON.stringify(PLOTS));
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+
+    await new Promise<void>((resolve) => secured.listen(0, '127.0.0.1', resolve));
+    securedOrigin = `http://127.0.0.1:${(secured.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => secured.close(() => resolve()));
+  });
+
+  it('keeps the geometry the source returned to the signed-in session', async () => {
+    const observation = await observeInBrowser({ url: `${securedOrigin}/`, settleMs: 4_000 });
+    if (!observation.ok) throw new Error(observation.reason);
+
+    const captured = observation.captured.find((entry) => entry.url.includes('/api/plots'));
+    expect(captured, 'the response should have been kept whole').toBeDefined();
+    expect(captured?.carriedSession, 'the request it watched was an authenticated one').toBe(true);
+
+    const document = JSON.parse(new TextDecoder().decode(captured!.bytes)) as typeof PLOTS;
+    expect(document.features).toHaveLength(1);
+    expect(document.features[0]?.properties.final_plot_no).toBe('12');
+    expect(document.features[0]?.geometry.coordinates[0]?.[0]).toEqual([72.63, 23.01]);
+  }, 120_000);
+
+  it('reads it back into features without asking the source again', async () => {
+    const observation = await observeInBrowser({ url: `${securedOrigin}/`, settleMs: 4_000 });
+    if (!observation.ok) throw new Error(observation.reason);
+    const captured = observation.captured.find((entry) => entry.url.includes('/api/plots'))!;
+
+    const before = unauthenticatedAttempts.length;
+    const { readCapturedDocument } = await import('@/lib/discovery/captured');
+    const read = await readCapturedDocument({
+      record: {
+        id: 'cap_plots',
+        url: captured.url,
+        contentType: captured.contentType,
+        kind: captured.kind,
+        byteLength: captured.bytes.byteLength,
+        capturedAt: new Date().toISOString(),
+        carriedSession: captured.carriedSession,
+      },
+      bytes: captured.bytes,
+    });
+
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    expect(read.features).toHaveLength(1);
+    expect(read.features[0]?.properties.village).toBe('Vastral');
+
+    // Nothing went back to the source: no request at all, let alone one
+    // without the session that was entitled to the data.
+    expect(unauthenticatedAttempts.length).toBe(before);
+  }, 120_000);
+
+  it('keeps no credential alongside the data it kept', async () => {
+    const observation = await observeInBrowser({ url: `${securedOrigin}/`, settleMs: 4_000 });
+    if (!observation.ok) throw new Error(observation.reason);
+
+    // The captured record says the request was authenticated. It does not, and
+    // must not, carry what authenticated it.
+    const serialised = JSON.stringify(
+      observation.captured.map((entry) => ({ ...entry, bytes: undefined })),
+    );
+    expect(serialised).not.toContain('abc123');
+    expect(serialised).not.toContain('tpm_session');
+    expect(JSON.stringify(observation.requests)).not.toContain('abc123');
+  }, 120_000);
+});

@@ -96,10 +96,21 @@ endpoint at an opaque URL like `/g/7f3a2b` is recognised as GeoJSON without any 
 depending on that endpoint answering a server-side fetch the same way. Diagnostics shows the verdict per
 request in its **Is** column.
 
-**2. If that still finds nothing, drive it yourself.** Tick **Let me drive it** as well. A visible browser window
-opens and keeps recording until you close it. Use the map normally — choose your city and area, click a parcel.
-Some maps load no geometry at all until they are used, and no automated page load reproduces that; a person
-using the map does. Close the window when you are done and the scan carries on with everything it saw.
+**2. If that still finds nothing, open it and sign in.** Press **Open TownPlanMap and sign in**. A visible
+browser window opens at the source and keeps recording until you close it. Sign in if you have an account, then
+use the map normally — choose your city and area, open a parcel. Every dataset the site sends back is captured
+as you go, and read straight out of those bytes afterwards.
+
+This is the path that works when a source only returns geometry to a signed-in user, and it is worth being
+exact about why it is legitimate. **You** sign in, with your own credentials, on TownPlanMap's own page. The
+tool never sees, types, stores or transmits a credential; it does not automate a login form; it does not click
+through a captcha or a consent wall; and the browser profile is thrown away when the window closes, so nothing
+that signed you in is written to disk or reused in a later request. What it keeps is the *response* — data the
+source deliberately sent to a session that was entitled to it. Reading those bytes again asks the source for
+nothing and presents no credential to anyone.
+
+That is the line: **using access you have, never working around access you do not.** If you have no account,
+nothing here creates one, and a `401` stays a `401`.
 
 **3. Read the Diagnostics screen.** It lists every document the scan fetched and what each one answered, every
 request the browser watched the site make, and every URL that was seen and dropped *with the reason*. An empty
@@ -123,9 +134,13 @@ curl -X POST localhost:3000/api/connect \
   -d '{"useBrowser":true,"extraUrls":["https://example.gov.in/arcgis/rest/services/TP/FeatureServer/0"]}'
 ```
 
-**5. If the source refuses.** A `401` or `403` is reported exactly as it arrived. The deep scan does not change
-that: it carries no credentials and no stored session, and it does not click through a login, a consent wall or
-a captcha. If a dataset needs authorised access through TownPlanMap, that is where to get it.
+**5. If the source refuses.** A `401` or `403` is reported exactly as it arrived. The scan does not change that
+by itself: it carries no credentials and no stored session, and it never clicks through a login, a consent wall
+or a captcha. If a dataset needs authorised access through TownPlanMap, sign in yourself with step 2 — or, if
+you have no account, that is where to get one.
+
+> **Captured data is held in memory** unless `DATABASE_URL` is set, so it is lost when the server restarts.
+> With PostGIS it persists in a `captured_responses` table. Either way it stays on your machine.
 
 ### With PostGIS (recommended)
 
@@ -179,6 +194,7 @@ src/
     ├── discovery/
     │   ├── engine.ts           The discovery scan
     │   ├── browser.ts          The deep scan: watching the site in a real browser
+    │   ├── captured.ts         Reading data captured inside your own browser session
     │   ├── harvest.ts          Candidate URL extraction from HTML, JS and observations
     │   ├── probe.ts            Endpoint probing and classification
     │   ├── locations.ts        City/village discovery from the source
@@ -331,6 +347,23 @@ shape of an SSRF. The controls are:
 - **Output escaping.** Source attributes are XML-escaped and control characters XML forbids are stripped;
   filenames are sanitised for every platform, including Windows reserved device names.
 
+### Signing in
+
+When the window is visible, you can sign in to the source yourself, and everything it then returns is captured
+and readable. The boundary is precise and enforced in code:
+
+| The tool does | The tool never does |
+|---|---|
+| Open a browser window at the source | Type, read, store or transmit a credential |
+| Record the requests the page makes | Automate a login form or fill a password field |
+| Keep the geographic responses it receives | Click through a captcha or a consent wall |
+| Note *that* a request carried a session cookie | Keep, copy or replay that cookie |
+| Discard the browser profile when the window closes | Write a session to disk or reuse it later |
+
+`carriedSession` on a captured response records only that the request the browser watched was an authenticated
+one, so the interface can say accurately where data came from. The header itself is read and dropped; a test
+asserts that no cookie value survives into any record the tool keeps.
+
 ### The browser pass
 
 The deep scan is the one place the source's own code runs, so it is worth being precise about what it does.
@@ -416,7 +449,7 @@ TownPlanMap_Export.zip
 ## Testing
 
 ```bash
-npm test          # 292 unit tests
+npm test          # 304 unit tests
 npm run typecheck
 npm run lint
 npm run build

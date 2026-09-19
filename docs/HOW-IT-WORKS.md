@@ -143,8 +143,32 @@ spend the entire request budget learning that JavaScript is JavaScript while the
 them. Bundles are read for the URLs inside them by the text pass; that is where they belong.
 
 One thing a page load cannot reproduce is a person. Some maps fetch no geometry until a city is chosen or a
-parcel clicked. **Let me drive it** opens a visible window and keeps recording until it is closed, so the
-requests that only happen in response to real use are recorded too.
+parcel clicked. **Open TownPlanMap and sign in** opens a visible window and keeps recording until it is closed,
+so the requests that only happen in response to real use are recorded too.
+
+#### Signing in, and the line that is not crossed
+
+Some sources return geometry only to a signed-in user. The window makes that reachable, and it is worth being
+exact about why that is legitimate rather than a workaround.
+
+The person signs in. They type their own credentials into the source's own page, in a window they can see.
+This tool never sees, types, stores or transmits a credential; it never automates a login form; it never clicks
+through a captcha or a consent wall; and the browser profile is ephemeral, so whatever authenticated the
+session is gone when the window closes and is never written to disk or carried into a later request.
+
+What is kept is the **response** — bytes the source deliberately sent to a session that was entitled to them.
+Reading those bytes again asks the source for nothing and presents no credential to anyone. A captured record
+notes *that* the request it watched carried a session cookie, so the interface can say accurately where data
+came from; the header itself is read and dropped, and a test asserts no cookie value survives into anything the
+tool keeps.
+
+The distinction the whole design turns on: **using access you have, never working around access you do not.**
+A `401` to a request nobody signed in for stays a `401`, and is reported as one.
+
+Captured geometry becomes an endpoint outright. Nothing is asked of the source a second time — which is not
+only a saving but the only honest option, because a server-side request made from a context that was never
+signed in has no standing to ask for it. A dedicated provider reads those bytes back into layers and features
+with the same parsers the network providers use, spending no requests at all.
 
 It is also deliberately unsubtle about being there:
 
@@ -605,6 +629,8 @@ The tool's failure behaviour is a feature, so here it is in one place:
 | The site builds its data URLs at runtime | The plain scan finds nothing and says to watch the site in a browser; the browser pass then records the real URLs |
 | The map loads nothing until it is used | "Let me drive it" opens a visible window and records while you use the map |
 | An endpoint answers the site but not a bare server-side request | The verdict from the bytes the site received stands; the difference is recorded as a readability problem, not a classification one |
+| A source only returns geometry to a signed-in user | You sign in yourself in the visible window; the responses are captured and read back, and no credential is kept |
+| Captured data is asked for after a restart | Said plainly: in-memory captures do not survive a restart unless a database is configured |
 | No browser is installed for the deep scan | Reported with the reason and how to fix it; the plain scan still runs |
 | The browser cannot reach the site | Recorded as a network failure, distinct from a refusal by this tool's own rules |
 | A URL is pasted in by hand | Probed directly, classified from the body it returns, and shown as supplied by hand rather than discovered |
@@ -619,6 +645,7 @@ The tool's failure behaviour is a feature, so here it is in one place:
 | Every limit in one place | `src/lib/config.ts` |
 | The only outbound HTTP path | `src/lib/net/safe-fetch.ts` |
 | Watching the site in a browser | `src/lib/discovery/browser.ts` |
+| Reading data captured in your own session | `src/lib/discovery/captured.ts` |
 | SSRF rules | `src/lib/net/ssrf.ts` |
 | How endpoints are found | `src/lib/discovery/engine.ts`, `harvest.ts` |
 | Vector vs raster | `src/lib/geo/detect.ts` |

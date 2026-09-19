@@ -36,6 +36,9 @@ export type ConnectionState =
       endpointCount: number;
       vectorEndpointCount: number;
       rasterEndpointCount: number;
+      /** Geographic responses kept whole from the browser window. */
+      capturedCount: number;
+      signedInCaptureCount: number;
       storage: { kind: string; durable: boolean };
       notes: string[];
       warnings: string[];
@@ -143,7 +146,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           id: string;
           mapInterfaceDetected: boolean;
           geographicLayersDetected: boolean;
-          endpoints: Array<{ nature: string }>;
+          endpoints: Array<{ nature: string; discoveredIn: string }>;
           notes: string[];
           warnings: string[];
           diagnostics?: { advice?: string[]; mode?: string };
@@ -164,6 +167,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           endpointCount: data.scan.endpoints.length,
           vectorEndpointCount: data.scan.endpoints.filter((endpoint) => endpoint.nature === 'vector').length,
           rasterEndpointCount: data.scan.endpoints.filter((endpoint) => endpoint.nature === 'raster').length,
+          capturedCount: data.scan.endpoints.filter(
+            (endpoint) => endpoint.discoveredIn === 'data the site returned to your own browser session',
+          ).length,
+          signedInCaptureCount: 0,
           storage: data.storage ?? { kind: 'unknown', durable: false },
           notes: data.scan.notes,
           warnings: data.scan.warnings,
@@ -212,6 +219,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         endpointCount: Number(data.endpointCount ?? 0),
         vectorEndpointCount: Number(data.vectorEndpointCount ?? 0),
         rasterEndpointCount: Number(data.rasterEndpointCount ?? 0),
+        capturedCount: Number(data.capturedCount ?? 0),
+        signedInCaptureCount: Number(data.signedInCaptureCount ?? 0),
         storage: (data.storage as { kind: string; durable: boolean }) ?? { kind: 'unknown', durable: false },
         notes: Array.isArray(data.notes) ? (data.notes as string[]) : [],
         warnings: Array.isArray(data.warnings) ? (data.warnings as string[]) : [],

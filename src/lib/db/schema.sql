@@ -139,6 +139,24 @@ CREATE INDEX IF NOT EXISTS exports_created_idx ON exports (created_at DESC);
 -- `origin` is fixed to 'original' by a CHECK constraint. Generated documents
 -- belong in `exports`, and the constraint makes it impossible to file a
 -- reconstructed artefact here by mistake.
+-- Responses the browser received and the tool kept, so they can be read back
+-- without asking the source to repeat a request made by a session that no
+-- longer exists. Kept apart from source_files: those are documents the source
+-- publishes, these are API responses it returned to one browser.
+CREATE TABLE IF NOT EXISTS captured_responses (
+  id                     TEXT PRIMARY KEY,
+  url                    TEXT NOT NULL UNIQUE,
+  content_type           TEXT,
+  kind                   TEXT NOT NULL,
+  byte_size              BIGINT NOT NULL,
+  content                BYTEA NOT NULL,
+  captured_at            TIMESTAMPTZ NOT NULL,
+  -- Whether the window was signed in by the person using it at the time.
+  -- Recorded so the interface can say where data came from; this tool never
+  -- performs the sign-in and never stores a credential.
+  from_signed_in_session BOOLEAN NOT NULL DEFAULT FALSE
+);
+
 CREATE TABLE IF NOT EXISTS source_files (
   id             TEXT PRIMARY KEY,
   origin         TEXT NOT NULL DEFAULT 'original' CHECK (origin = 'original'),

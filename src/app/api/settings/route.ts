@@ -64,6 +64,11 @@ export const GET = handler(async () => {
           'clicked through.',
         'Requests the browser makes are checked against the same address rules as the server-side fetcher, and one ' +
           'aimed at a private, loopback or link-local address is aborted before it leaves this machine.',
+        'When the window is visible you can sign in to the source yourself. Your credentials are typed into the ' +
+          'source\u2019s own page: this tool never sees, types, stores or transmits them, never automates a login ' +
+          'form, and discards the browser profile when the window closes.',
+        'What it keeps is the response \u2014 data the source deliberately returned to a session entitled to it. ' +
+          'Reading those bytes again asks the source for nothing and presents no credential to anyone.',
       ],
     },
     policies: [
@@ -77,7 +82,8 @@ export const GET = handler(async () => {
         'The optional browser pass is a real browser, and appends the same identity to the browser\u2019s own ' +
         'user agent rather than disguising either one.',
       'The browser pass observes the site; it never clicks through a login, a consent wall or a captcha, and it ' +
-        'carries no credentials or stored session.',
+        'carries in no credentials or stored session. Where a person signs in themselves, the tool records only ' +
+        'that the request was authenticated \u2014 never what authenticated it.',
     ],
   });
 });

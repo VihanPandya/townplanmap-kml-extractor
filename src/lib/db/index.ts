@@ -23,6 +23,7 @@ import type {
 } from '@/lib/discovery/types';
 import type { ExportJob } from '@/lib/exports/types';
 import type { SourceFileRecord } from '@/lib/preservation/types';
+import type { CapturedPayload, CapturedResponse } from '@/lib/discovery/captured';
 
 export interface CatalogStore {
   readonly kind: 'postgis' | 'memory';
@@ -60,6 +61,15 @@ export interface CatalogStore {
    * re-serialises or normalises them — a preserved file must remain provably
    * identical to what the source served.
    */
+  /**
+   * Responses the browser received and this tool kept. Held apart from
+   * preserved source files, which are published documents; these are API
+   * responses, and the distinction matters for how each is described.
+   */
+  saveCapturedResponse(record: CapturedResponse, bytes: Uint8Array): Promise<void>;
+  getCapturedPayload(url: string): Promise<CapturedPayload | null>;
+  listCapturedResponses(): Promise<CapturedResponse[]>;
+
   saveSourceFile(record: SourceFileRecord, bytes: Uint8Array): Promise<void>;
   listSourceFiles(limit?: number): Promise<SourceFileRecord[]>;
   getSourceFile(id: string): Promise<SourceFileRecord | null>;

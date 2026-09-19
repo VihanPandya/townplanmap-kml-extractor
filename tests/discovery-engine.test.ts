@@ -37,6 +37,13 @@ const PARCELS = {
 
 let recorder: FetchRecorder;
 let observed: ObservedRequest[] = [];
+let capturedBodies: Array<{
+  url: string;
+  contentType: string | null;
+  kind: string;
+  bytes: Uint8Array;
+  carriedSession: boolean;
+}> = [];
 let browserOk = true;
 
 vi.mock('@/lib/net/safe-fetch', async (importOriginal) => {
@@ -59,6 +66,7 @@ vi.mock('@/lib/discovery/browser', async (importOriginal) => {
             finalUrl: `${HOST}/`,
             title: 'City map',
             requests: observed,
+            captured: capturedBodies,
             blockedCount: 0,
             notes: [],
           }
@@ -87,6 +95,7 @@ const BASE_ROUTES: Route[] = [
 beforeEach(() => {
   recorder = new FetchRecorder(BASE_ROUTES);
   observed = [];
+  capturedBodies = [];
   browserOk = true;
 });
 
@@ -279,6 +288,51 @@ describe('a front-end that builds its data URLs at runtime', () => {
     expect(scan.geographicLayersDetected).toBe(true);
     // One probe, not thirty-one.
     expect(scan.diagnostics?.candidatesProbed).toBe(1);
+  });
+
+  it('catalogues geometry the browser kept, without asking the source again', async () => {
+    const url = `${HOST}/api/v1/plots?ward=4`;
+    const body = JSON.stringify({
+      type: 'FeatureCollection',
+      features: [
+        {
+          type: 'Feature',
+          properties: { plot: '12' },
+          geometry: { type: 'Polygon', coordinates: [[[72.6, 23.0], [72.7, 23.0], [72.7, 23.1], [72.6, 23.0]]] },
+        },
+      ],
+    });
+    capturedBodies = [
+      {
+        url,
+        contentType: 'application/geo+json',
+        kind: 'geojson',
+        bytes: new TextEncoder().encode(body),
+        carriedSession: true,
+      },
+    ];
+
+    const stored: string[] = [];
+    const scan = await runDiscoveryScan({
+      baseUrl: `${HOST}/`,
+      useBrowser: true,
+      onCaptured: (captured) => {
+        stored.push(captured.url);
+      },
+    });
+
+    expect(stored).toEqual([url]);
+
+    const endpoint = scan.endpoints.find((entry) => entry.url === url);
+    expect(endpoint?.nature).toBe('vector');
+    expect(endpoint?.bodyVerified).toBe(true);
+    expect(endpoint?.discoveredIn).toBe('data the site returned to your own browser session');
+    expect(endpoint?.evidence.join(' ')).toContain('signed-in session');
+    expect(endpoint?.evidence.join(' ')).toContain('was stored or reused');
+
+    // The source was never asked for this URL: the bytes were already in hand.
+    expect(recorder.urls).not.toContain(url);
+    expect(scan.geographicLayersDetected).toBe(true);
   });
 
   it('reports the browser being unavailable rather than failing silently', async () => {

@@ -22,6 +22,12 @@ import { WfsProvider } from '@/lib/discovery/providers/wfs';
 import { GeoJsonFileProvider, KmlFileProvider, TopoJsonFileProvider } from '@/lib/discovery/providers/file-data';
 import { VectorTileProvider } from '@/lib/discovery/providers/vector-tiles';
 import { FixtureProvider, fixtureEndpoint } from '@/lib/discovery/providers/fixture';
+import {
+  CapturedProvider,
+  capturedId,
+  setCapturedLookup,
+  type CapturedResponse,
+} from '@/lib/discovery/captured';
 import type { FeaturePage, FeatureQuery, GeoProvider, ProviderContext } from '@/lib/discovery/providers/base';
 import { runPreservationSweep, looksLikeKmlResource } from '@/lib/preservation/sweep';
 import type { DiscoveryRoute, PreservationSweep, SourceFileRecord } from '@/lib/preservation/types';
@@ -42,6 +48,10 @@ import type {
  * `geojson`.
  */
 const PROVIDERS: GeoProvider[] = [
+  // Bytes already in hand come first: they need no network at all, and for a
+  // response returned to a signed-in session they are the only honest way to
+  // read it.
+  new CapturedProvider(),
   new FixtureProvider(),
   new ArcGisProvider(),
   new WfsProvider(),
@@ -50,6 +60,15 @@ const PROVIDERS: GeoProvider[] = [
   new KmlFileProvider(),
   new VectorTileProvider(),
 ];
+
+/**
+ * Let the captured-response provider reach the store without importing it,
+ * which would make the discovery layer depend on storage.
+ */
+setCapturedLookup(async (url) => {
+  const store = await getStore();
+  return store.getCapturedPayload(url);
+});
 
 export function providerFor(endpoint: DiscoveredEndpoint): GeoProvider | null {
   return PROVIDERS.find((provider) => provider.supports(endpoint)) ?? null;
@@ -77,6 +96,10 @@ export type ConnectResult = {
   scan: ScanResult;
   cities: LocationRecord[];
   layerCandidates: number;
+  /** Geographic responses kept whole from the browser window. */
+  capturedCount: number;
+  /** How many of those the source returned to a signed-in session. */
+  signedInCaptureCount: number;
   storeKind: string;
   storeDurable: boolean;
 };
@@ -105,9 +128,26 @@ export async function connect(options: ConnectOptions = {}): Promise<ConnectResu
   const store = await getStore();
   const budget = new RequestBudget();
 
+  let capturedCount = 0;
+  let signedInCaptureCount = 0;
+
   const scan = await runDiscoveryScan({
     budget,
     signal,
+    onCaptured: async (body) => {
+      capturedCount += 1;
+      if (body.carriedSession) signedInCaptureCount += 1;
+      const record: CapturedResponse = {
+        id: capturedId(body.url),
+        url: body.url,
+        contentType: body.contentType,
+        kind: body.kind,
+        byteLength: body.bytes.byteLength,
+        capturedAt: new Date().toISOString(),
+        carriedSession: body.carriedSession,
+      };
+      await store.saveCapturedResponse(record, body.bytes);
+    },
     ...(options.seeds ? { seeds: options.seeds } : {}),
     ...(options.useBrowser === undefined ? {} : { useBrowser: options.useBrowser }),
     ...(options.browserSettleMs === undefined ? {} : { browserSettleMs: options.browserSettleMs }),
@@ -159,6 +199,8 @@ export async function connect(options: ConnectOptions = {}): Promise<ConnectResu
     scan,
     cities,
     layerCandidates: scan.endpoints.filter((endpoint) => endpoint.nature === 'vector').length,
+    capturedCount,
+    signedInCaptureCount,
     storeKind: store.kind,
     storeDurable: store.durable,
   };

@@ -34,7 +34,8 @@ import {
   toEndpoints,
   type Candidate,
 } from './harvest';
-import { observeInBrowser, worthPursuing } from './browser';
+import { observeInBrowser, worthPursuing, type CapturedBody } from './browser';
+import { CAPTURED_SOURCE, capturedEndpointId } from './captured';
 import { probeEndpoint } from './probe';
 import type {
   BrowserDiagnostics,
@@ -57,9 +58,16 @@ export type ScanOptions = {
   browserSettleMs?: number;
   /**
    * Open a visible window and keep recording until it is closed. The way to
-   * reach data a map loads only in response to a person using it.
+   * reach data a map loads only in response to a person using it — including
+   * after they have signed themselves in.
    */
   browserHeaded?: boolean;
+  /**
+   * Called with each geographic response the browser kept whole, so the caller
+   * can store it. Bytes never travel inside the scan result, which is
+   * persisted as JSON.
+   */
+  onCaptured?: (captured: CapturedBody) => Promise<void> | void;
 };
 
 export async function runDiscoveryScan(options: ScanOptions = {}): Promise<ScanResult> {
@@ -110,6 +118,7 @@ export async function runDiscoveryScan(options: ScanOptions = {}): Promise<ScanR
   let scriptsSeen = 0;
   let scriptsRead = 0;
   let candidatesProbed = 0;
+  const capturedEndpoints: DiscoveredEndpoint[] = [];
 
   const finish = (
     endpoints: DiscoveredEndpoint[],
@@ -188,6 +197,42 @@ export async function runDiscoveryScan(options: ScanOptions = {}): Promise<ScanR
           `${pursued.length} of them were carried forward as candidates.`,
       );
       addAll(candidatesFromObservations(pursued, { onReject: noteRejection }));
+
+      // Geometry the browser kept is already in hand, so it becomes an endpoint
+      // outright: nothing needs to be asked of the source a second time, and a
+      // response returned to a signed-in session cannot be asked for again from
+      // a context that was never signed in.
+      for (const body of observation.captured ?? []) {
+        if (options.onCaptured) await options.onCaptured(body);
+        capturedEndpoints.push({
+          id: capturedEndpointId(body.url),
+          url: body.url,
+          kind: body.kind,
+          nature: 'vector',
+          discoveredIn: CAPTURED_SOURCE,
+          bodyVerified: true,
+          evidence: [
+            body.carriedSession
+              ? 'The site returned this to your own signed-in session while the window was open, and the ' +
+                'response was kept. Nothing that authenticated that session was stored or reused.'
+              : 'The site returned this to your browser while the window was open, and the response was kept.',
+            `Read as ${body.kind} from the bytes themselves.`,
+          ],
+          probe: {
+            reachable: true,
+            status: 200,
+            contentType: body.contentType,
+            bytes: body.bytes.byteLength,
+            detail: { capturedBytes: body.bytes.byteLength },
+          },
+        });
+      }
+      if (capturedEndpoints.length > 0) {
+        notes.push(
+          `${capturedEndpoints.length} geographic response(s) were captured whole and can be read without ` +
+            'asking the source again.',
+        );
+      }
       for (const skipped of observation.requests.filter((request) => !worthPursuing(request))) {
         noteRejection({
           url: skipped.url,
@@ -321,7 +366,7 @@ export async function runDiscoveryScan(options: ScanOptions = {}): Promise<ScanR
   }
 
   // --- 5. Probe ------------------------------------------------------------
-  let endpoints = toEndpoints([...candidates.values()]);
+  let endpoints = dedupe([...capturedEndpoints, ...toEndpoints([...candidates.values()])]);
 
   if (endpoints.length === 0) {
     notes.push(
@@ -334,6 +379,13 @@ export async function runDiscoveryScan(options: ScanOptions = {}): Promise<ScanR
 
   const probed: DiscoveredEndpoint[] = [];
   for (const [index, endpoint] of endpoints.entries()) {
+    // Captured geometry arrives already read. Spending a request to ask the
+    // source for it again would learn nothing and, for data returned to a
+    // signed-in session, would be asking from a context with no standing.
+    if (endpoint.probe) {
+      probed.push(endpoint);
+      continue;
+    }
     if (index >= LIMITS.maxProbes || budget.requestsRemaining <= 2) {
       probed.push(endpoint); // Keep it listed, unprobed and honestly marked so.
       continue;

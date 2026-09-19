@@ -83,6 +83,8 @@ export const POST = handler(async (request) => {
     endpointCount: result.scan.endpoints.length,
     vectorEndpointCount: result.layerCandidates,
     rasterEndpointCount: result.scan.endpoints.filter((endpoint) => endpoint.nature === 'raster').length,
+    capturedCount: result.capturedCount,
+    signedInCaptureCount: result.signedInCaptureCount,
     cities: result.cities,
     documentsFetched: result.scan.documentsFetched,
     requestsSpent: result.scan.requestsSpent,

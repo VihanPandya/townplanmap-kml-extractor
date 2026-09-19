@@ -19,6 +19,7 @@ import type {
 } from '@/lib/discovery/types';
 import type { ExportJob } from '@/lib/exports/types';
 import type { SourceFileRecord } from '@/lib/preservation/types';
+import type { CapturedPayload, CapturedResponse } from '@/lib/discovery/captured';
 import type { CatalogStore } from './index';
 
 export class MemoryStore implements CatalogStore {
@@ -34,6 +35,7 @@ export class MemoryStore implements CatalogStore {
   private featuresByLayer = new Map<string, string[]>();
   private exports = new Map<string, ExportJob>();
   private sourceFiles = new Map<string, { record: SourceFileRecord; bytes: Uint8Array }>();
+  private captured = new Map<string, { record: CapturedResponse; bytes: Uint8Array }>();
 
   describe(): string {
     return (
@@ -164,6 +166,19 @@ export class MemoryStore implements CatalogStore {
     return ids
       .map((id) => this.features.get(id))
       .filter((feature): feature is FeatureRecord => feature !== undefined);
+  }
+
+  async saveCapturedResponse(record: CapturedResponse, bytes: Uint8Array): Promise<void> {
+    this.captured.set(record.url, { record, bytes: new Uint8Array(bytes) });
+  }
+
+  async getCapturedPayload(url: string): Promise<CapturedPayload | null> {
+    const entry = this.captured.get(url);
+    return entry ? { record: entry.record, bytes: new Uint8Array(entry.bytes) } : null;
+  }
+
+  async listCapturedResponses(): Promise<CapturedResponse[]> {
+    return [...this.captured.values()].map((entry) => entry.record);
   }
 
   async saveSourceFile(record: SourceFileRecord, bytes: Uint8Array): Promise<void> {

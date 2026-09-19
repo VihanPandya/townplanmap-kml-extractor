@@ -105,6 +105,17 @@ export const BROWSER = {
   headedSettleMs: intFromEnv('TPM_BROWSER_HEADED_SETTLE_MS', 300_000, 1_800_000),
   /** Requests recorded from one page visit. */
   maxObservedRequests: intFromEnv('TPM_BROWSER_MAX_REQUESTS', 500, 5_000),
+
+  /**
+   * Geographic responses kept from one visit, and the size of each.
+   *
+   * When the window is signed in, the data the site returns is data the person
+   * using it is authorised to see. Keeping those bytes is what makes it usable
+   * without ever asking the server to repeat a request it has no standing to
+   * make.
+   */
+  maxCapturedResponses: intFromEnv('TPM_BROWSER_MAX_CAPTURED', 400, 5_000),
+  maxCapturedBytes: intFromEnv('TPM_BROWSER_MAX_CAPTURED_BYTES', 64 * 1024 * 1024, 512 * 1024 * 1024),
 } as const;
 
 /** The upstream this build is pointed at. Overridable for self-hosted mirrors. */

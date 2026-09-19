@@ -18,6 +18,7 @@ import type {
 } from '@/lib/discovery/types';
 import type { ExportJob } from '@/lib/exports/types';
 import type { SourceFileRecord } from '@/lib/preservation/types';
+import type { CapturedPayload, CapturedResponse } from '@/lib/discovery/captured';
 import type { Geometry, BoundingBox } from '@/lib/geo/types';
 import { identifyCrs, UNKNOWN_CRS } from '@/lib/geo/crs';
 import { areaSquareMetres, describeGeometry } from '@/lib/geo/geometry';
@@ -437,6 +438,47 @@ export class PostgisStore implements CatalogStore {
 
   // --- preserved original files ------------------------------------------
 
+  async saveCapturedResponse(record: CapturedResponse, bytes: Uint8Array): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO captured_responses (id, url, content_type, kind, byte_size, content, captured_at, from_signed_in_session)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (url) DO UPDATE SET
+         content_type = EXCLUDED.content_type,
+         kind = EXCLUDED.kind,
+         byte_size = EXCLUDED.byte_size,
+         content = EXCLUDED.content,
+         captured_at = EXCLUDED.captured_at,
+         from_signed_in_session = EXCLUDED.from_signed_in_session`,
+      [
+        record.id,
+        record.url,
+        record.contentType,
+        record.kind,
+        record.byteLength,
+        Buffer.from(bytes),
+        record.capturedAt,
+        record.carriedSession,
+      ],
+    );
+  }
+
+  async getCapturedPayload(url: string): Promise<CapturedPayload | null> {
+    const result = await this.pool.query('SELECT * FROM captured_responses WHERE url = $1', [url]);
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      record: capturedFromRow(row),
+      bytes: new Uint8Array(row.content as Buffer),
+    };
+  }
+
+  async listCapturedResponses(): Promise<CapturedResponse[]> {
+    const result = await this.pool.query(
+      'SELECT id, url, content_type, kind, byte_size, captured_at, from_signed_in_session FROM captured_responses ORDER BY captured_at DESC',
+    );
+    return result.rows.map(capturedFromRow);
+  }
+
   async saveSourceFile(record: SourceFileRecord, bytes: Uint8Array): Promise<void> {
     await this.pool.query(
       `INSERT INTO source_files (
@@ -704,5 +746,19 @@ function rowToExport(row: Row): ExportJob {
     notes: Array.isArray(requested.notes) ? requested.notes : [],
     createdAt: new Date(String(row.created_at)).toISOString(),
     completedAt: row.completed_at ? new Date(String(row.completed_at)).toISOString() : null,
+  };
+}
+
+/** Map a captured_responses row onto the record the application uses. */
+function capturedFromRow(row: Record<string, unknown>): CapturedResponse {
+  return {
+    id: String(row.id),
+    url: String(row.url),
+    contentType: (row.content_type as string | null) ?? null,
+    kind: row.kind as CapturedResponse['kind'],
+    byteLength: Number(row.byte_size),
+    capturedAt:
+      row.captured_at instanceof Date ? row.captured_at.toISOString() : String(row.captured_at),
+    carriedSession: Boolean(row.from_signed_in_session),
   };
 }

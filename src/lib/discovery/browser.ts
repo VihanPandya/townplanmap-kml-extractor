@@ -31,7 +31,7 @@ import { join } from 'node:path';
 import { BROWSER, USER_AGENT } from '@/lib/config';
 import { assertSafeUrl } from '@/lib/net/ssrf';
 import { classifyBody, classifyUrl } from '@/lib/geo/detect';
-import type { ObservedRequest } from './types';
+import type { EndpointKind, ObservedRequest } from './types';
 
 /** Responses whose bytes are read and classified during one visit. */
 const MAX_BODY_READS = 120;
@@ -40,6 +40,24 @@ const BODY_SAMPLE_BYTES = 128 * 1024;
 /** Responses larger than this are identified by their first bytes alone. */
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
+/**
+ * A geographic response the browser received, kept whole.
+ *
+ * When the person using the window has signed themselves in, the data the
+ * source returns is data they are entitled to. Keeping the bytes is what makes
+ * it usable afterwards without asking the source to repeat a request for a
+ * session that no longer exists — and without this tool ever holding, reusing
+ * or transmitting anything that authenticated it.
+ */
+export type CapturedBody = {
+  url: string;
+  contentType: string | null;
+  kind: EndpointKind;
+  bytes: Uint8Array;
+  /** The site's own request carried a session cookie or Authorization header. */
+  carriedSession: boolean;
+};
+
 export type BrowserObservation =
   | {
       ok: true;
@@ -47,6 +65,8 @@ export type BrowserObservation =
       finalUrl: string;
       title: string;
       requests: ObservedRequest[];
+      /** Geographic responses kept whole, in the order they arrived. */
+      captured: CapturedBody[];
       blockedCount: number;
       notes: string[];
     }
@@ -190,6 +210,8 @@ export async function observeInBrowser(options: BrowserScanOptions): Promise<Bro
   const notes: string[] = [];
   const requests: ObservedRequest[] = [];
   const byKey = new Map<string, ObservedRequest>();
+  const captured: CapturedBody[] = [];
+  let capturedBytes = 0;
   let blockedCount = 0;
 
   const browser = await chromium.launch({
@@ -220,6 +242,9 @@ export async function observeInBrowser(options: BrowserScanOptions): Promise<Bro
       notes.push('The browser user agent could not be read, so its default was used unchanged.');
     }
 
+    // An ephemeral profile: no userDataDir, so whatever the person signs in to
+    // during the visit lives in memory and is gone when the window closes.
+    // Nothing is written to disk and nothing is carried into a later scan.
     const context = await browser.newContext({
       userAgent,
       // No stored credentials, no cookies carried in, nothing that would make
@@ -348,6 +373,35 @@ export async function observeInBrowser(options: BrowserScanOptions): Promise<Bro
               };
               if (stored.bytes === null) stored.bytes = buffer.byteLength;
             }
+
+            // Geometry is kept whole. Everything else was only ever read to
+            // find out what it was, and is dropped.
+            if (
+              detection.nature !== 'vector' ||
+              captured.length >= BROWSER.maxCapturedResponses ||
+              capturedBytes + buffer.byteLength > BROWSER.maxCapturedBytes
+            ) {
+              return;
+            }
+
+            // Whether the site's own request was an authenticated one. Read,
+            // not used: the header itself is never stored, copied or replayed.
+            let carriedSession = false;
+            try {
+              const sent = await request.allHeaders();
+              carriedSession = Boolean(sent['cookie'] || sent['authorization']);
+            } catch {
+              /* Headers can be unavailable after the fact; absence is not a claim. */
+            }
+
+            capturedBytes += buffer.byteLength;
+            captured.push({
+              url: response.url(),
+              contentType,
+              kind: detection.kind,
+              bytes: new Uint8Array(buffer),
+              carriedSession,
+            });
           } catch {
             // A body can be unavailable once the page has moved on. The request
             // is still recorded; it simply goes to the probe unclassified.
@@ -445,6 +499,16 @@ export async function observeInBrowser(options: BrowserScanOptions): Promise<Bro
     if (classified > 0) {
       notes.push(`${classified} of those responses were identified from the bytes the browser received.`);
     }
+    if (captured.length > 0) {
+      const signedIn = captured.filter((entry) => entry.carriedSession).length;
+      notes.push(
+        `${captured.length} geographic response(s) were kept whole` +
+          (signedIn > 0
+            ? `, ${signedIn} of them returned to a signed-in session. Nothing that authenticated that session ` +
+              'was stored, copied or reused.'
+            : '.'),
+      );
+    }
 
     if (requests.length >= BROWSER.maxObservedRequests) {
       notes.push(
@@ -452,7 +516,7 @@ export async function observeInBrowser(options: BrowserScanOptions): Promise<Bro
       );
     }
 
-    return { ok: true, executablePath, finalUrl, title, requests, blockedCount, notes };
+    return { ok: true, executablePath, finalUrl, title, requests, captured, blockedCount, notes };
   } finally {
     options.signal?.removeEventListener('abort', closeOnAbort);
     await browser.close().catch(() => undefined);

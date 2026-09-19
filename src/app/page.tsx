@@ -203,6 +203,50 @@ function ConnectionPanel() {
         .filter((entry) => /^https?:\/\//i.test(entry)),
     });
 
+  // Signing in is the person's own act, in the source's own page. This tool
+  // opens the window and reads what the site sends back; it never sees, types
+  // or keeps a credential, and it says so where the button is.
+  const signIn = () => void connect({ useBrowser: true, browserHeaded: true });
+
+  const actions = (
+    <div className="space-y-2">
+      {browser.available && (
+        <>
+          <button type="button" className="btn btn-primary w-full" onClick={signIn}>
+            Open TownPlanMap and sign in
+          </button>
+          <p className="text-xs text-[var(--color-ink-subtle)]">
+            A browser window opens at townplanmap.com. Sign in yourself and use the map as you normally would —
+            choose your city and area, open a parcel. Every dataset the site sends back is captured as you go.
+            Close the window when you are done. Your password is typed into TownPlanMap&rsquo;s own page, never
+            into this tool: nothing that signs you in is seen, stored or reused.
+          </p>
+        </>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className={`btn flex-1 ${browser.available ? 'btn-secondary' : 'btn-primary'}`}
+          onClick={run}
+        >
+          {driveIt
+            ? 'Open the site and record while I use it'
+            : useBrowser
+              ? 'Scan without signing in'
+              : 'Scan the source'}
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          aria-expanded={showAdvanced}
+          onClick={() => setShowAdvanced((current) => !current)}
+        >
+          {showAdvanced ? 'Hide options' : 'Scan options'}
+        </button>
+      </div>
+    </div>
+  );
+
   const advanced = (
     <div className="space-y-3 border-t border-[var(--color-border)] pt-3">
       <label className="flex items-start gap-2 text-sm">
@@ -284,11 +328,27 @@ function ConnectionPanel() {
             </Check>
           </ul>
 
-          <dl className="grid grid-cols-3 gap-3 border-t border-[var(--color-border)] pt-3">
+          <dl className="grid grid-cols-4 gap-3 border-t border-[var(--color-border)] pt-3">
             <Stat label="Endpoints" value={connection.endpointCount} />
             <Stat label="Vector" value={connection.vectorEndpointCount} tone="good" />
             <Stat label="Raster" value={connection.rasterEndpointCount} tone="warn" />
+            <Stat label="Captured" value={connection.capturedCount} tone="good" />
           </dl>
+
+          {connection.capturedCount > 0 && (
+            <Notice tone="good" title={`${connection.capturedCount} dataset(s) captured from your browser`}>
+              {connection.signedInCaptureCount > 0
+                ? `${connection.signedInCaptureCount} of them were returned to your signed-in session. They are ` +
+                  'held here as the source sent them, and can be read and exported without asking it again. ' +
+                  'Nothing that authenticated that session was stored or reused.'
+                : 'They are held here exactly as the source sent them, and can be read and exported without ' +
+                  'asking it again.'}{' '}
+              <Link href="/layers" className="underline">
+                Open Map Layers
+              </Link>{' '}
+              to see what they hold.
+            </Notice>
+          )}
 
           {/* When the scan found nothing usable, what to do about it matters
               more than anything else on the screen, so it goes first. */}
@@ -326,19 +386,7 @@ function ConnectionPanel() {
             </Notice>
           )}
 
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className="btn btn-secondary flex-1" onClick={run}>
-              {driveIt ? 'Open the site and record while I use it' : useBrowser ? 'Re-scan, watching in a browser' : 'Re-scan the source'}
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              aria-expanded={showAdvanced}
-              onClick={() => setShowAdvanced((current) => !current)}
-            >
-              {showAdvanced ? 'Hide options' : 'Scan options'}
-            </button>
-          </div>
+          {actions}
           {showAdvanced && advanced}
         </div>
       ) : connection.status === 'connecting' ? (
@@ -346,7 +394,7 @@ function ConnectionPanel() {
           <Spinner
             label={
               driveIt
-                ? 'A browser window is open \u2014 use the map, then close the window\u2026'
+                ? 'A browser window is open \u2014 sign in, use the map, then close the window\u2026'
                 : useBrowser
                   ? 'Opening the site in a browser and recording what it loads\u2026'
                   : 'Reading the landing page, its scripts and its data endpoints\u2026'
@@ -354,9 +402,9 @@ function ConnectionPanel() {
           />
           <p className="text-xs text-[var(--color-ink-subtle)]">
             {driveIt
-              ? 'Go to the window that just opened and use the site as you normally would: choose your city and ' +
-                'area, and click a parcel. Every request it makes is being recorded. Close the window when you are ' +
-                'done and the scan will carry on with what it saw.'
+              ? 'Go to the window that just opened and use the site as you normally would \u2014 sign in if you ' +
+                'have an account, choose your city and area, and open a parcel. Every dataset it sends back is ' +
+                'being captured. Close the window when you are done and the scan will carry on with what it saw.'
               : useBrowser
                 ? 'The page is loaded in a browser on this machine so the requests it makes for itself can be ' +
                   'written down. Those URLs are then fetched through the usual guarded path. This takes up to a ' +
@@ -374,10 +422,8 @@ function ConnectionPanel() {
             This tool does not attempt to bypass access controls, authentication, paywalls or anti-bot systems. If the
             source is refusing requests, that refusal is reported as-is.
           </p>
-          <button type="button" className="btn btn-primary w-full" onClick={run}>
-            Try again
-          </button>
-          {advanced}
+          {actions}
+          {showAdvanced && advanced}
         </div>
       ) : (
         <div className="space-y-3">
@@ -385,10 +431,8 @@ function ConnectionPanel() {
             Connect to inspect the publicly accessible map data behind TownPlanMap and find out which layers expose real
             geographic geometry.
           </p>
-          <button type="button" className="btn btn-primary w-full" onClick={run}>
-            Connect to TownPlanMap
-          </button>
-          {advanced}
+          {actions}
+          {showAdvanced && advanced}
         </div>
       )}
     </Panel>
