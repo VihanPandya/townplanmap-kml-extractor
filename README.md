@@ -110,7 +110,7 @@ src/
     │   ├── harvest.ts          Candidate URL extraction from HTML and JS
     │   ├── probe.ts            Endpoint probing and classification
     │   ├── locations.ts        City/village discovery from the source
-    │   └── providers/          ArcGIS, WFS, GeoJSON/KML files, vector tiles
+    │   └── providers/          ArcGIS, WFS, GML, GeoJSON/KML files, vector tiles
     ├── geo/
     │   ├── detect.ts           Vector versus raster
     │   ├── crs.ts              CRS identification and proj4 transforms
@@ -132,7 +132,7 @@ A provider knows how to talk to one family of GIS service and turns it into the 
 | Provider | Handles | Notes |
 |---|---|---|
 | `ArcGisProvider` | FeatureServer, MapServer | Prefers `f=geojson`; falls back to Esri JSON on older deployments |
-| `WfsProvider` | OGC WFS 1.x/2.x | Requests GeoJSON output; GML-only servers are reported, not guessed at |
+| `WfsProvider` | OGC WFS 1.x/2.x | Prefers GeoJSON output; falls back to GML 2 / GML 3.2 when the deployment cannot emit it |
 | `GeoJsonFileProvider` | GeoJSON documents | |
 | `KmlFileProvider` | KML and KMZ | The source geometry is already what we want |
 | `VectorTileProvider` | Mapbox Vector Tiles | Last resort — see the provenance note below |
@@ -155,6 +155,24 @@ Every feature carries a provenance status that follows it all the way into the e
 | `synthetic-fixture` | Invented demonstration data. Not from the source. |
 
 Nothing approximate is ever described as exact.
+
+### GML and the axis-order trap
+
+WFS deployments that cannot emit GeoJSON are read as GML, which brings the one genuinely dangerous ambiguity in
+GIS interchange. `EPSG:4326` defines latitude as its first axis, but the short form `EPSG:4326` was used by
+almost everyone to mean longitude first, so OGC introduced the URN form `urn:ogc:def:crs:EPSG::4326` to mean the
+authority's real order. **The two spellings of "the same" CRS imply opposite coordinate orders.**
+
+Reading this wrong does not throw and does not look broken — it silently transposes every coordinate, putting a
+parcel in Gujarat into the Indian Ocean. The order is therefore derived from the declared `srsName` by explicit
+rule (CRS84 → lon/lat; URN or OGC URI → lat/lon; short form → lon/lat; projected CRS → easting/northing), and:
+
+- GML requests ask for `urn:ogc:def:crs:OGC:1.3:CRS84`, whose order is unambiguous by definition.
+- A server that declares **no** `srsName` leaves the order unknowable. Because asking for CRS84 is not the same
+  as the server confirming it, that geometry is marked CRS-unknown and is **not** offered for KML export —
+  rather than quietly claiming EPSG:4326.
+- A plausibility check flags geometry that only makes sense transposed. It reports the suspicion; it never
+  silently "corrects" the coordinates.
 
 ---
 
@@ -239,7 +257,7 @@ TownPlanMap_Export.zip
 ## Testing
 
 ```bash
-npm test          # 122 unit tests
+npm test          # 207 unit tests
 npm run typecheck
 npm run lint
 npm run build
@@ -257,8 +275,6 @@ KML round-tripping, XML hardening and filename/path sanitisation.
 - **Discovery is best-effort.** It reads the page and its scripts server-side. A map that loads its endpoints
   only after a user interaction, or from an endpoint shape this build does not recognise, will not be found —
   and the tool says so rather than inventing a result.
-- **GML-only WFS servers are not parsed.** GeoJSON output is requested; a server that offers only GML is
-  reported as such.
 - **TopoJSON, GeoPackage and shapefile archives are detected but not yet read.**
 - **Vector tiles are a fallback, not an equal.** See the provenance table.
 - **A raster-only source yields no KML.** By design.
