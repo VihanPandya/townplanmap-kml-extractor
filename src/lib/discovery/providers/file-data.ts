@@ -13,6 +13,7 @@ import { identifyCrs, geojsonDefaultCrs, type CrsIdentification } from '@/lib/ge
 import { areaSquareMetres, describeGeometry, mergeBbox } from '@/lib/geo/geometry';
 import type { BoundingBox, Geometry } from '@/lib/geo/types';
 import { parseKml, type ParsedPlacemark } from '@/lib/kml/parse';
+import { isTopology, topologyObjectNames, topologyToFeatures } from './topojson';
 import type { DiscoveredEndpoint, FeatureRecord, LayerRecord } from '../types';
 import { hash } from '../harvest';
 import {
@@ -354,6 +355,161 @@ export async function extractKmlFromKmz(body: Uint8Array): Promise<string | null
     );
   }
   return new TextDecoder('utf-8', { fatal: false }).decode(uncompressed);
+}
+
+/**
+ * TopoJSON provider.
+ *
+ * TopoJSON is a single document like GeoJSON, but each top-level object inside
+ * it is a separate layer, so one document can expose several.
+ */
+export class TopoJsonFileProvider implements GeoProvider {
+  readonly id = 'topojson-file';
+
+  supports(endpoint: DiscoveredEndpoint): boolean {
+    return endpoint.kind === 'topojson';
+  }
+
+  async listLayers(endpoint: DiscoveredEndpoint, context: ProviderContext): Promise<LayerRecord[]> {
+    const response = await safeFetch(endpoint.url, {
+      budget: context.budget,
+      signal: context.signal,
+      accept: 'application/json',
+    });
+    if (!response.ok) return [];
+
+    let document: unknown;
+    try {
+      document = JSON.parse(asText(response));
+    } catch {
+      return [];
+    }
+    if (!isTopology(document)) return [];
+
+    // TopoJSON carries no CRS member and, like GeoJSON, is defined against
+    // WGS84 longitude/latitude.
+    const crs = geojsonDefaultCrs();
+    const documentName = nameFromUrl(endpoint.url);
+    const names = topologyObjectNames(document);
+
+    // Cache the decoded features now: the document is already in hand, and
+    // re-fetching it per layer would multiply the cost by the layer count.
+    for (const name of names) {
+      const layerId = `layer_topojson_${hash(`${endpoint.url}#${name}`)}`;
+      const layer = this.describe(endpoint, documentName, name, crs, context, layerId);
+      const features = topologyToFeatures(document, name).map((entry, index) =>
+        buildRecord(
+          layer,
+          crs,
+          index,
+          entry.geometry,
+          entry.properties,
+          entry.id,
+          'Coordinates are as published in the TopoJSON document, decoded from its shared arcs.',
+        ),
+      );
+      cacheSet(layer.serviceUrl, features, crs);
+    }
+
+    return names.map((name) =>
+      this.describe(
+        endpoint,
+        documentName,
+        name,
+        crs,
+        context,
+        `layer_topojson_${hash(`${endpoint.url}#${name}`)}`,
+      ),
+    );
+  }
+
+  private describe(
+    endpoint: DiscoveredEndpoint,
+    documentName: string,
+    objectName: string,
+    crs: ReturnType<typeof geojsonDefaultCrs>,
+    context: ProviderContext,
+    id: string,
+  ): LayerRecord {
+    const name = objectName === 'default' ? documentName : objectName.replace(/[_-]+/g, ' ');
+    return {
+      id,
+      sourceLayerId: objectName,
+      name,
+      description: `TopoJSON object "${objectName}" published by the source.`,
+      category: categoriseLayer(name, documentName),
+      endpointId: endpoint.id,
+      endpointKind: 'topojson',
+      serviceUrl: `${endpoint.url}#${objectName}`,
+      availability: {
+        status: 'vector',
+        geometryTypes: [],
+        note: 'TopoJSON stores shared boundaries as arcs; the geometry is reconstructed from them exactly.',
+      },
+      crs,
+      featureCount: null,
+      fields: [],
+      bbox: null,
+      locationId: context.locationId ?? null,
+      kmlExportable: true,
+      kmlNote: 'TopoJSON coordinates are WGS84 and can be written to KML directly.',
+      attribution: null,
+    };
+  }
+
+  async listFeatures(layer: LayerRecord, query: FeatureQuery, context: ProviderContext): Promise<FeaturePage> {
+    const cached = cacheGet(layer.serviceUrl);
+    if (cached) return paginate(cached.features, query);
+
+    // The cache has expired since the layer list was built; read it again.
+    const [documentUrl, objectName] = layer.serviceUrl.split('#');
+    const response = await safeFetch(documentUrl ?? layer.serviceUrl, {
+      budget: context.budget,
+      signal: context.signal,
+      accept: 'application/json',
+    });
+    if (!response.ok) {
+      return {
+        features: [],
+        nextCursor: null,
+        total: null,
+        truncated: false,
+        notes: [
+          response.kind === 'auth-required'
+            ? 'This dataset requires authorised access through TownPlanMap.'
+            : `The document could not be read: ${response.reason}`,
+        ],
+      };
+    }
+
+    let document: unknown;
+    try {
+      document = JSON.parse(asText(response));
+    } catch {
+      return { features: [], nextCursor: null, total: null, truncated: false, notes: ['The document is not valid JSON.'] };
+    }
+    if (!isTopology(document)) {
+      return { features: [], nextCursor: null, total: null, truncated: false, notes: ['The document is not a TopoJSON topology.'] };
+    }
+
+    const crs = geojsonDefaultCrs();
+    const features = topologyToFeatures(document, objectName)
+      .slice(0, LIMITS.maxFeaturesPerLayer)
+      .map((entry, index) =>
+        buildRecord(
+          layer,
+          crs,
+          index,
+          entry.geometry,
+          entry.properties,
+          entry.id,
+          'Coordinates are as published in the TopoJSON document, decoded from its shared arcs.',
+        ),
+      );
+
+    cacheSet(layer.serviceUrl, features, crs);
+    return paginate(features, query);
+  }
 }
 
 /** Shared pagination + client-side search for whole-document providers. */

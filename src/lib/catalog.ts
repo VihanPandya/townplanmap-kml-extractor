@@ -19,7 +19,7 @@ import {
 } from '@/lib/discovery/locations';
 import { ArcGisProvider } from '@/lib/discovery/providers/arcgis';
 import { WfsProvider } from '@/lib/discovery/providers/wfs';
-import { GeoJsonFileProvider, KmlFileProvider } from '@/lib/discovery/providers/file-data';
+import { GeoJsonFileProvider, KmlFileProvider, TopoJsonFileProvider } from '@/lib/discovery/providers/file-data';
 import { VectorTileProvider } from '@/lib/discovery/providers/vector-tiles';
 import { FixtureProvider, fixtureEndpoint } from '@/lib/discovery/providers/fixture';
 import type { FeaturePage, FeatureQuery, GeoProvider, ProviderContext } from '@/lib/discovery/providers/base';
@@ -44,6 +44,7 @@ const PROVIDERS: GeoProvider[] = [
   new ArcGisProvider(),
   new WfsProvider(),
   new GeoJsonFileProvider(),
+  new TopoJsonFileProvider(),
   new KmlFileProvider(),
   new VectorTileProvider(),
 ];

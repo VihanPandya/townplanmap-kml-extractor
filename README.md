@@ -18,8 +18,8 @@ TownPlanMap → City → Village → Layer → Land/Feature → Geometry → KML
 
 1. **Connects** to the source and reads its landing page and bundled JavaScript *as text* — nothing fetched is
    ever executed.
-2. **Discovers** the data endpoints behind the map: ArcGIS REST services, OGC WFS/WMS, GeoJSON and KML
-   documents, map style documents, TileJSON and vector tiles.
+2. **Discovers** the data endpoints behind the map: ArcGIS REST services, OGC WFS/WMS, GeoJSON, TopoJSON and
+   KML documents, map style documents, TileJSON and vector tiles.
 3. **Classifies** each one as vector geometry, raster imagery, metadata, or unknown — from the response body's
    magic bytes and structure, not from the URL or the server's declared content type, both of which are
    frequently wrong.
@@ -110,7 +110,7 @@ src/
     │   ├── harvest.ts          Candidate URL extraction from HTML and JS
     │   ├── probe.ts            Endpoint probing and classification
     │   ├── locations.ts        City/village discovery from the source
-    │   └── providers/          ArcGIS, WFS, GML, GeoJSON/KML files, vector tiles
+    │   └── providers/          ArcGIS, WFS, GML, GeoJSON/TopoJSON/KML, vector tiles
     ├── geo/
     │   ├── detect.ts           Vector versus raster
     │   ├── crs.ts              CRS identification and proj4 transforms
@@ -134,6 +134,7 @@ A provider knows how to talk to one family of GIS service and turns it into the 
 | `ArcGisProvider` | FeatureServer, MapServer | Prefers `f=geojson`; falls back to Esri JSON on older deployments |
 | `WfsProvider` | OGC WFS 1.x/2.x | Prefers GeoJSON output; falls back to GML 2 / GML 3.2 when the deployment cannot emit it |
 | `GeoJsonFileProvider` | GeoJSON documents | |
+| `TopoJsonFileProvider` | TopoJSON topologies | Reconstructs geometry from shared arcs; each top-level object is a layer |
 | `KmlFileProvider` | KML and KMZ | The source geometry is already what we want |
 | `VectorTileProvider` | Mapbox Vector Tiles | Last resort — see the provenance note below |
 
@@ -257,7 +258,7 @@ TownPlanMap_Export.zip
 ## Testing
 
 ```bash
-npm test          # 207 unit tests
+npm test          # 227 unit tests
 npm run typecheck
 npm run lint
 npm run build
@@ -275,7 +276,7 @@ KML round-tripping, XML hardening and filename/path sanitisation.
 - **Discovery is best-effort.** It reads the page and its scripts server-side. A map that loads its endpoints
   only after a user interaction, or from an endpoint shape this build does not recognise, will not be found —
   and the tool says so rather than inventing a result.
-- **TopoJSON, GeoPackage and shapefile archives are detected but not yet read.**
+- **GeoPackage and shapefile archives are detected but not yet read.**
 - **Vector tiles are a fallback, not an equal.** See the provenance table.
 - **A raster-only source yields no KML.** By design.
 
