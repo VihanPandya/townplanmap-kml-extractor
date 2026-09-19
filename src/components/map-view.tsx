@@ -25,7 +25,9 @@ import {
   type StyleSpecification,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { BoundingBox, Geometry } from '@/lib/geo/types';
+import length from '@turf/length';
+import area from '@turf/area';
+import type { BoundingBox, Geometry, Position } from '@/lib/geo/types';
 
 export type MapFeature = {
   id: string;
@@ -37,6 +39,15 @@ export type MapFeature = {
 };
 
 export type BasemapId = 'map' | 'satellite' | 'terrain' | 'none';
+
+/** The optional GIS tools offered on the map. */
+export type MapTool = 'none' | 'measure-distance' | 'measure-area' | 'select-box';
+
+const TOOL_LABELS: Record<Exclude<MapTool, 'none'>, string> = {
+  'measure-distance': 'Measure distance',
+  'measure-area': 'Measure area',
+  'select-box': 'Select by rectangle',
+};
 
 type BasemapDefinition = { label: string; tiles: string[] | null; attribution: string; maxzoom: number };
 
@@ -85,6 +96,10 @@ if (typeof window !== 'undefined') {
 }
 
 const SOURCE_ID = 'tpm-features';
+const MEASURE_SOURCE = 'tpm-measure';
+const MEASURE_FILL = 'tpm-measure-fill';
+const MEASURE_LINE = 'tpm-measure-line';
+const MEASURE_POINTS = 'tpm-measure-points';
 const FILL_LAYER = 'tpm-fill';
 const LINE_LAYER = 'tpm-line';
 const POINT_LAYER = 'tpm-point';
@@ -124,6 +139,26 @@ function buildStyle(basemap: BasemapId): StyleSpecification {
   // whole style load — leaving a map with no sources, no layers and no `load`
   // event. Nothing here renders text labels, so no glyph source is needed.
   return { version: 8, sources, layers };
+}
+
+/**
+ * Wrap a callback so its identity is stable while it always calls the latest
+ * version.
+ *
+ * The map's effects attach DOM and MapLibre listeners. If they depended on
+ * callback props directly, a caller passing an inline arrow — which is the
+ * normal thing to do — would tear those listeners down and rebuild them on
+ * every render, dropping in-progress drags and resetting any state the
+ * listeners had set.
+ */
+function useStableCallback<A extends unknown[], R>(
+  callback: ((...args: A) => R) | undefined,
+): (...args: A) => R | undefined {
+  const ref = useRef(callback);
+  useEffect(() => {
+    ref.current = callback;
+  }, [callback]);
+  return useCallback((...args: A) => ref.current?.(...args), []);
 }
 
 function toCollection(features: MapFeature[]): GeoJSON.FeatureCollection {
@@ -194,19 +229,25 @@ export function MapView({
   features,
   selectedIds,
   onSelect,
+  onSelectMany,
   onBoundsChange,
   fitKey,
   height = '100%',
   showAttributionNotice = true,
+  tools = false,
 }: {
   features: MapFeature[];
   selectedIds?: string[];
   onSelect?: (featureId: string) => void;
+  /** Called by the spatial selection tools with every feature they matched. */
+  onSelectMany?: (featureIds: string[], mode: 'replace' | 'add') => void;
   onBoundsChange?: (bbox: BoundingBox) => void;
   /** Changing this value refits the map to the current features. */
   fitKey?: string | number;
   height?: string;
   showAttributionNotice?: boolean;
+  /** Show the measurement and spatial-selection tools. */
+  tools?: boolean;
 }) {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
@@ -214,6 +255,13 @@ export function MapView({
   const [basemap, setBasemap] = useState<BasemapId>('map');
   const [ready, setReady] = useState(false);
   const [tileError, setTileError] = useState<string | null>(null);
+  const [tool, setTool] = useState<MapTool>('none');
+  const [measured, setMeasured] = useState<Position[]>([]);
+  const [boxHint, setBoxHint] = useState<string | null>(null);
+
+  const handleSelect = useStableCallback(onSelect);
+  const handleSelectMany = useStableCallback(onSelectMany);
+  const handleBoundsChange = useStableCallback(onBoundsChange);
 
   const selection = useMemo(() => new Set(selectedIds ?? []), [selectedIds]);
 
@@ -281,6 +329,48 @@ export function MapView({
         paint: {
           'circle-radius': ['case', ['==', ['get', '__selected'], 1], 7, 5],
           'circle-color': ['case', ['==', ['get', '__selected'], 1], '#fbbf24', '#4f8ff7'],
+          'circle-stroke-width': 1.5,
+          'circle-stroke-color': '#0b0e14',
+        },
+      });
+    }
+
+    // The measurement overlay lives in its own source so it never mixes with
+    // extracted geometry — a measurement is the user's annotation, not data
+    // from the source, and must never end up in an export.
+    if (!instance.getSource(MEASURE_SOURCE)) {
+      instance.addSource(MEASURE_SOURCE, {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+    }
+    if (!instance.getLayer(MEASURE_FILL)) {
+      instance.addLayer({
+        id: MEASURE_FILL,
+        type: 'fill',
+        source: MEASURE_SOURCE,
+        filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: { 'fill-color': '#34d399', 'fill-opacity': 0.18 },
+      });
+    }
+    if (!instance.getLayer(MEASURE_LINE)) {
+      instance.addLayer({
+        id: MEASURE_LINE,
+        type: 'line',
+        source: MEASURE_SOURCE,
+        filter: ['in', ['geometry-type'], ['literal', ['LineString', 'Polygon']]],
+        paint: { 'line-color': '#34d399', 'line-width': 2, 'line-dasharray': [2, 1.5] },
+      });
+    }
+    if (!instance.getLayer(MEASURE_POINTS)) {
+      instance.addLayer({
+        id: MEASURE_POINTS,
+        type: 'circle',
+        source: MEASURE_SOURCE,
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: {
+          'circle-radius': 4,
+          'circle-color': '#34d399',
           'circle-stroke-width': 1.5,
           'circle-stroke-color': '#0b0e14',
         },
@@ -369,10 +459,203 @@ export function MapView({
     // installs the layers with the current data as soon as it settles.
   }, [collection, ready, installLayers]);
 
+  // --- measurement overlay -------------------------------------------------
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready) return;
+    const source = instance.getSource(MEASURE_SOURCE) as GeoJSONSource | undefined;
+    if (!source) return;
+
+    const drawn: GeoJSON.Feature[] = measured.map((position) => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: position as number[] },
+      properties: {},
+    }));
+
+    if (tool === 'measure-area' && measured.length >= 3) {
+      drawn.push({
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [[...measured, measured[0]!] as number[][]] },
+        properties: {},
+      });
+    } else if (measured.length >= 2) {
+      drawn.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: measured as number[][] },
+        properties: {},
+      });
+    }
+
+    source.setData({ type: 'FeatureCollection', features: drawn });
+  }, [measured, tool, ready]);
+
+  // Leaving a tool clears whatever it drew.
+  useEffect(() => {
+    if (tool === 'none') setMeasured([]);
+  }, [tool]);
+
+  // --- measurement clicks ---------------------------------------------------
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready) return;
+    if (tool !== 'measure-distance' && tool !== 'measure-area') return;
+
+    const onClick = (event: MapMouseEvent) => {
+      setMeasured((current) => [...current, [event.lngLat.lng, event.lngLat.lat]]);
+    };
+    const onDoubleClick = (event: MapMouseEvent) => {
+      // Finish the measurement rather than zooming.
+      event.preventDefault();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setTool('none');
+      if (event.key === 'Backspace') setMeasured((current) => current.slice(0, -1));
+    };
+
+    instance.on('click', onClick);
+    instance.on('dblclick', onDoubleClick);
+    instance.getCanvas().style.cursor = 'crosshair';
+    window.addEventListener('keydown', onKey);
+
+    return () => {
+      instance.off('click', onClick);
+      instance.off('dblclick', onDoubleClick);
+      instance.getCanvas().style.cursor = '';
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [tool, ready]);
+
+  // --- rectangle selection ---------------------------------------------------
+  useEffect(() => {
+    const instance = map.current;
+    if (!instance || !ready || tool !== 'select-box') return;
+
+    const canvas = instance.getCanvasContainer();
+    let start: { x: number; y: number } | null = null;
+    let box: HTMLDivElement | null = null;
+
+    // Panning has to give way while a box is being dragged.
+    instance.dragPan.disable();
+    instance.boxZoom.disable();
+    instance.getCanvas().style.cursor = 'crosshair';
+    setBoxHint('Drag a rectangle over the features to select them. Hold Shift to add to the selection.');
+
+    const pointOf = (event: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    };
+
+    const onMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0) return;
+      start = pointOf(event);
+      box = document.createElement('div');
+      box.style.cssText =
+        'position:absolute;border:1.5px dashed #fbbf24;background:rgba(251,191,36,0.12);pointer-events:none;z-index:5';
+      canvas.appendChild(box);
+      event.preventDefault();
+    };
+
+    const onMouseMove = (event: MouseEvent) => {
+      if (!start || !box) return;
+      const current = pointOf(event);
+      const left = Math.min(start.x, current.x);
+      const top = Math.min(start.y, current.y);
+      box.style.left = `${left}px`;
+      box.style.top = `${top}px`;
+      box.style.width = `${Math.abs(current.x - start.x)}px`;
+      box.style.height = `${Math.abs(current.y - start.y)}px`;
+    };
+
+    const onMouseUp = (event: MouseEvent) => {
+      if (!start) return;
+      const current = pointOf(event);
+      box?.remove();
+      box = null;
+
+      const from = start;
+      start = null;
+
+      // A click rather than a drag: leave it to the ordinary select handler.
+      if (Math.abs(current.x - from.x) < 4 && Math.abs(current.y - from.y) < 4) return;
+
+      // MapLibre does the spatial query itself, against what is actually
+      // rendered, which is both correct and exactly what the user sees.
+      const hits = instance.queryRenderedFeatures(
+        [
+          [Math.min(from.x, current.x), Math.min(from.y, current.y)],
+          [Math.max(from.x, current.x), Math.max(from.y, current.y)],
+        ],
+        { layers: [FILL_LAYER, LINE_LAYER, POINT_LAYER] },
+      ) as MapGeoJSONFeature[];
+
+      const ids = [
+        ...new Set(
+          hits
+            .map((hit) => hit.properties?.__id)
+            .filter((id): id is string => typeof id === 'string'),
+        ),
+      ];
+
+      handleSelectMany(ids, event.shiftKey ? 'add' : 'replace');
+      setBoxHint(
+        ids.length === 0
+          ? 'No features fell inside that rectangle.'
+          : `${ids.length.toLocaleString()} feature(s) selected.`,
+      );
+    };
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setTool('none');
+    };
+
+    canvas.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('keydown', onKey);
+
+    return () => {
+      canvas.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('keydown', onKey);
+      box?.remove();
+      instance.dragPan.enable();
+      instance.boxZoom.enable();
+      instance.getCanvas().style.cursor = '';
+      setBoxHint(null);
+    };
+    // Deliberately not depending on the selection handler: it is stable, and a
+    // caller's inline arrow must not tear down a drag that is under way.
+  }, [tool, ready, handleSelectMany]);
+
+  /** Select every feature currently drawn in the viewport. */
+  const selectVisible = useCallback(() => {
+    const instance = map.current;
+    if (!instance) return;
+    const hits = instance.queryRenderedFeatures(undefined, {
+      layers: [FILL_LAYER, LINE_LAYER, POINT_LAYER],
+    }) as MapGeoJSONFeature[];
+
+    const ids = [
+      ...new Set(
+        hits.map((hit) => hit.properties?.__id).filter((id): id is string => typeof id === 'string'),
+      ),
+    ];
+    handleSelectMany(ids, 'replace');
+    setBoxHint(
+      ids.length === 0
+        ? 'No features are visible in the current view.'
+        : `${ids.length.toLocaleString()} visible feature(s) selected.`,
+    );
+  }, [handleSelectMany]);
+
   // --- interaction --------------------------------------------------------
   useEffect(() => {
     const instance = map.current;
     if (!instance || !ready) return;
+    // A tool owns the pointer while it is active; selecting a feature by
+    // accident mid-measurement would be its own kind of wrong.
+    if (tool !== 'none') return;
 
     const interactive = [FILL_LAYER, LINE_LAYER, POINT_LAYER];
 
@@ -381,7 +664,7 @@ export function MapView({
       const hit = hits[0];
       if (!hit) return;
       const id = hit.properties?.__id;
-      if (typeof id === 'string') onSelect?.(id);
+      if (typeof id === 'string') handleSelect(id);
     };
 
     const handleMove = (event: MapMouseEvent) => {
@@ -418,9 +701,8 @@ export function MapView({
     };
 
     const handleMoveEnd = () => {
-      if (!onBoundsChange) return;
       const bounds = instance.getBounds();
-      onBoundsChange([bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()]);
+      handleBoundsChange([bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()]);
     };
 
     instance.on('click', handleClick);
@@ -434,7 +716,7 @@ export function MapView({
       instance.off('mouseout', handleLeave);
       instance.off('moveend', handleMoveEnd);
     };
-  }, [ready, onSelect, onBoundsChange]);
+  }, [ready, handleSelect, handleBoundsChange, tool]);
 
   // --- fitting ------------------------------------------------------------
   const fit = useCallback(
@@ -468,6 +750,35 @@ export function MapView({
     () => decorated.filter((feature) => feature.selected),
     [decorated],
   );
+
+  /**
+   * The measurement readout.
+   *
+   * Distance is geodesic and area is on the ellipsoid, both from turf, rather
+   * than anything planar computed on screen coordinates.
+   */
+  const measurement = useMemo((): string | null => {
+    if (tool === 'measure-distance' && measured.length >= 2) {
+      const metres = length(
+        { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: measured as number[][] } },
+        { units: 'meters' },
+      );
+      return metres >= 1000 ? `${(metres / 1000).toFixed(3)} km` : `${metres.toFixed(1)} m`;
+    }
+
+    if (tool === 'measure-area' && measured.length >= 3) {
+      const squareMetres = area({
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'Polygon', coordinates: [[...measured, measured[0]!] as number[][]] },
+      });
+      return squareMetres >= 10_000
+        ? `${(squareMetres / 10_000).toFixed(3)} ha`
+        : `${Math.round(squareMetres).toLocaleString()} m\u00b2`;
+    }
+
+    return null;
+  }, [tool, measured]);
 
   return (
     <div className="relative overflow-hidden rounded-xl border border-[var(--color-border)]" style={{ height }}>
@@ -510,7 +821,66 @@ export function MapView({
             Fit selection
           </button>
         </div>
+
+        {tools && (
+          <div className="flex flex-col gap-2">
+            <div className="flex overflow-hidden rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-surface)]/95 backdrop-blur">
+              {(Object.keys(TOOL_LABELS) as Array<Exclude<MapTool, 'none'>>).map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  title={TOOL_LABELS[id]}
+                  aria-pressed={tool === id}
+                  onClick={() => setTool(tool === id ? 'none' : id)}
+                  className={`px-2.5 py-1.5 text-xs transition-colors ${
+                    tool === id
+                      ? 'bg-[var(--color-accent-strong)] text-white'
+                      : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]'
+                  }`}
+                >
+                  {id === 'measure-distance' ? 'Distance' : id === 'measure-area' ? 'Area' : 'Box select'}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={selectVisible}
+              disabled={decorated.length === 0}
+              className="rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-surface)]/95 px-2.5 py-1.5 text-xs text-[var(--color-ink-muted)] backdrop-blur transition-colors hover:text-[var(--color-ink)] disabled:opacity-40"
+            >
+              Select visible
+            </button>
+          </div>
+        )}
       </div>
+
+      {tools && (tool !== 'none' || measurement) && (
+        <div className="absolute bottom-10 right-3 max-w-xs rounded-lg border border-[var(--color-border-strong)] bg-[var(--color-surface)]/95 px-3 py-2 text-xs backdrop-blur">
+          {measurement ? (
+            <>
+              <p className="label mb-0.5">
+                {tool === 'measure-area' ? 'Area' : 'Distance'}
+              </p>
+              <p className="mono text-sm text-[var(--color-good)]">{measurement}</p>
+              <p className="mt-1 text-[var(--color-ink-subtle)]">
+                {measured.length} point(s). Backspace removes the last, Esc finishes.
+              </p>
+              <p className="mt-1 text-[var(--color-ink-subtle)]">
+                A measurement is your own annotation and is never included in an export.
+              </p>
+            </>
+          ) : tool === 'select-box' ? (
+            <p className="text-[var(--color-ink-muted)]">
+              {boxHint ?? 'Drag a rectangle over the features to select them.'}
+            </p>
+          ) : (
+            <p className="text-[var(--color-ink-muted)]">
+              Click on the map to add points. Esc finishes.
+            </p>
+          )}
+        </div>
+      )}
 
       {tileError && (
         <p className="absolute bottom-10 left-3 max-w-xs rounded-lg border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-2.5 py-1.5 text-xs text-[var(--color-warn)]">

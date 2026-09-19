@@ -15,7 +15,7 @@ import { useAppState } from '@/components/app-state';
 import { MapView, type MapFeature } from '@/components/map-view';
 import { Empty, KmlBadge, Notice, Panel, ProvenanceBadge, Row, Spinner } from '@/components/ui';
 import type { FeatureRecord, LayerField, LayerRecord } from '@/lib/discovery/types';
-import type { Geometry } from '@/lib/geo/types';
+import type { BoundingBox, Geometry } from '@/lib/geo/types';
 
 type FeatureResponse = {
   layer: Pick<
@@ -54,6 +54,7 @@ export default function FeaturesPage() {
   const [error, setError] = useState<string | null>(null);
   const [showTable, setShowTable] = useState(false);
   const [fitKey, setFitKey] = useState(0);
+  const [viewport, setViewport] = useState<BoundingBox | null>(null);
 
   const layerId = selection.layerId;
 
@@ -207,6 +208,29 @@ export default function FeaturesPage() {
             </button>
           </form>
 
+          <button
+            type="button"
+            className="btn btn-ghost"
+            title="Select every loaded feature matching the current search"
+            disabled={!submittedSearch || features.length === 0}
+            onClick={() => {
+              const needle = submittedSearch.toLowerCase();
+              setFeatureSelection(
+                features
+                  .filter(
+                    (feature) =>
+                      feature.name.toLowerCase().includes(needle) ||
+                      Object.values(feature.properties).some(
+                        (value) => value !== null && String(value).toLowerCase().includes(needle),
+                      ),
+                  )
+                  .map((feature) => feature.id),
+              );
+            }}
+          >
+            Select by attribute
+          </button>
+
           <button type="button" className="btn btn-ghost" onClick={() => setShowTable((value) => !value)}>
             {showTable ? 'Hide table' : 'Attribute table'}
           </button>
@@ -326,8 +350,15 @@ export default function FeaturesPage() {
             features={mapFeatures}
             selectedIds={highlightedIds}
             onSelect={(id) => setActiveId(id)}
+            onSelectMany={(ids, mode) =>
+              setFeatureSelection(
+                mode === 'add' ? [...new Set([...selection.featureIds, ...ids])] : ids,
+              )
+            }
+            onBoundsChange={setViewport}
             fitKey={fitKey}
             height="100%"
+            tools
           />
         </div>
 

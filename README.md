@@ -142,6 +142,24 @@ Dispatch is first-match-wins, most specific first.
 
 ---
 
+## GIS tools
+
+The feature explorer's map carries the optional tools from the specification:
+
+| Tool | What it does |
+|---|---|
+| **Distance** | Click points to measure a geodesic distance. Backspace removes the last point, Esc finishes. |
+| **Area** | Click three or more points to measure an ellipsoidal area, in hectares or square metres. |
+| **Box select** | Drag a rectangle to select every feature inside it. Hold Shift to add to the current selection. |
+| **Select visible** | Selects every feature currently drawn in the viewport. |
+| **Select by attribute** | Selects every loaded feature matching the current search across its attributes. |
+
+Spatial selection is delegated to MapLibre's own `queryRenderedFeatures`, so it matches exactly what is drawn
+rather than a reimplemented predicate. Measurements live in their own map source and are never part of an
+export — a measurement is the user's annotation, not data from the source.
+
+---
+
 ## Provenance
 
 Every feature carries a provenance status that follows it all the way into the exported file:
@@ -279,6 +297,8 @@ KML round-tripping, XML hardening and filename/path sanitisation.
 - **GeoPackage and shapefile archives are detected but not yet read.**
 - **Vector tiles are a fallback, not an equal.** See the provenance table.
 - **A raster-only source yields no KML.** By design.
+- **Box selection acts on rendered geometry**, so a feature scrolled out of view is not selected by it. "Select
+  visible" is explicit about this; use the attribute search to reach features beyond the viewport.
 
 ---
 
